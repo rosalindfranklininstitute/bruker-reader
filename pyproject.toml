@@ -1,0 +1,27 @@
+[project]
+name = "bruker-reader"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "McDougall", email = "Duncan.McDougall@rfi.ac.uk" }
+]
+requires-python = ">=3.13"
+dependencies = [
+    "datargs",
+    "icecream>=2.2.0",
+    "ms-nexus-tools",
+    "opentims-bruker-bridge>=1.2.0",
+    "opentimspy>=1.1.0",
+]
+
+[project.scripts]
+main = "bruker_reader:main"
+
+[build-system]
+requires = ["uv_build>=0.10.11,<0.11.0"]
+build-backend = "uv_build"
+
+[tool.uv.sources]
+ms-nexus-tools = { path = "../ms-nexus-tools", editable = true }
+datargs = { path = "../datargs", editable = true }
