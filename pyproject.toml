@@ -6,17 +6,19 @@ readme = "README.md"
 authors = [
     { name = "McDougall", email = "Duncan.McDougall@rfi.ac.uk" }
 ]
-requires-python = ">=3.13"
+requires-python = ">=3.12, <3.14"
 dependencies = [
     "datargs",
     "icecream>=2.2.0",
     "ms-nexus-tools",
     "opentims-bruker-bridge>=1.2.0",
     "opentimspy>=1.1.0",
+    "tqdm>=4.67.3",
 ]
 
 [project.scripts]
 main = "bruker_reader:main"
+scratch = "bruker_reader:scratch"
 
 [build-system]
 requires = ["uv_build>=0.10.11,<0.11.0"]
@@ -25,3 +27,16 @@ build-backend = "uv_build"
 [tool.uv.sources]
 ms-nexus-tools = { path = "../ms-nexus-tools", editable = true }
 datargs = { path = "../datargs", editable = true }
+
+[tool.line_profiler.kernprof]
+line-by-line = true
+verbose = false
+skip-zero = true
+prof-mod = ['./src/bruker_reader/', 'bruker_reader']
+prof-imports = false
+
+[dependency-groups]
+dev = [
+    "line-profiler>=5.0.1",
+    "snakeviz>=2.2.2",
+]
