@@ -9,7 +9,21 @@ from tqdm import tqdm
 from icecream import ic
 
 from . import maldi
+from . import query
 from .loader import load_opentims
+
+from typing import NamedTuple
+from collections import namedtuple
+
+
+def query_data() -> None:
+    partial_args = query.ProcessArgs.parse_config("query")
+    process_args = query.ProcessArgs.parse_interactive(
+        "query",
+        exclude=["config"],
+        args=partial_args.remaining_args,
+    )
+    query.process(process_args, partial_args.config)
 
 
 def main() -> None:
@@ -42,9 +56,9 @@ def scratch() -> None:
         ic(D.frames["NumScans"])
         ic(np.sum(D.frames["NumPeaks"]))
         ic(np.sum(D.frames["NumScans"]))
-        for dd in sorted(dir(D)):
-            print(f"{dd: <40}: {type(getattr(D, dd))}")
-        exit()
+        # for dd in sorted(dir(D)):
+        #     print(f"{dd: <40}: {type(getattr(D, dd))}")
+        # exit()
         ic(D.min_frame, D.max_frame)
         ic(D.min_scan, D.max_scan)
         ic(D.min_mz, D.max_mz)
@@ -77,7 +91,7 @@ def scratch() -> None:
         for frame in tqdm(D.query_iter(D.ms1_frames, columns=all_columns)):
             tof, _ = np.histogram(frame["tof"], bins=tof_edges)
 
-            # ic(frame)
+            ic(frame)
             # ic(np.unique(frame["frame"]))
             # ic(np.unique(frame["retention_time"]))
             # ic(np.unique(frame["scan"]))
@@ -87,6 +101,7 @@ def scratch() -> None:
             #     break
             # else:
             #     second = True
+            exit()
             unique_tof += tof
         ic(unique_tof.shape)
         ic(np.max(unique_tof))
