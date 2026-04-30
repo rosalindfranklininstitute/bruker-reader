@@ -174,6 +174,7 @@ def read_axes(
     GenericAxis,
     Shape,
     np.ndarray,
+    np.ndarray,
     dict,
     np.ndarray,
     dict,
@@ -186,8 +187,15 @@ def read_axes(
     x_values = np.unique(frame_x)
     y_values = np.unique(frame_y)
 
-    x_dict = {x: ii for ii, x in enumerate(x_values)}
-    y_dict = {y: ii for ii, y in enumerate(y_values)}
+    frame_x_to_axis = {fx: ii for ii, fx in enumerate(x_values)}
+    frame_y_to_axis = {fy: ii for ii, fy in enumerate(y_values)}
+
+    frame_inx = np.full((len(x_values), len(y_values)), -1)
+    for ii, (x, y) in enumerate(zip(frame_x, frame_y)):
+        ii_x = frame_x_to_axis[x]
+        ii_y = frame_y_to_axis[y]
+        assert frame_inx[ii_x, ii_y] == -1
+        frame_inx[ii_x, ii_y] = ii + 1
 
     scan_positions = np.arange(D.min_scan, D.max_scan + 1)
     iim_edges = D.scan_to_inv_ion_mobility_frame_sorted(
@@ -241,35 +249,164 @@ def read_axes(
         ]
     )
 
-    return axes, shape, frame_x, x_dict, frame_y, y_dict, iim_edges
+    return (
+        axes,
+        shape,
+        frame_inx,
+        frame_x,
+        frame_x_to_axis,
+        frame_y,
+        frame_y_to_axis,
+        iim_edges,
+    )
+
+
+Int1D32 = np.ndarray[tuple[int], np.dtype[np.int32]]
+Int2D32 = np.ndarray[tuple[int, int], np.dtype[np.int32]]
+Float1D32 = np.ndarray[tuple[int], np.dtype[np.float32]]
+
+
+@dataclass
+class IndexingData:
+    frame_inx: Int2D32
+    frame_x: Int1D32
+    frame_y: Int1D32
+    frame_x_to_axis: dict[int, int]
+    frame_y_to_axis: dict[int, int]
+    shape: Shape
+    chunker: Chunker
+    initial_mass: Float1D32
+    iim_edges: Float1D32
+    mz_edges: Float1D32
+
+
+def fill_memory_block(
+    args,
+    D,
+    meta: IndexingData,
+    chunk: Chunk,
+    tic_values,
+    mobiligram_values,
+    mz_spectrum,
+):
+    mz_buffer = np.zeros(chunk.shape, dtype=np.float32)
+    int_buffer = np.zeros(chunk.shape, dtype=np.uint32)
+
+    frames = [ii for ii in meta.frame_inx[chunk[1], chunk[2]].ravel() if ii >= 0]
+
+    for frame in tqdm(
+        D.query_iter(frames, columns=D.all_columns),
+        total=len(frames),
+        desc="frames in chunk",
+        leave=False,
+    ):
+        ii = frame["frame"][0] - 1
+        assert np.all(frame["frame"] == ii + 1)
+
+        x = meta.frame_x_to_axis[meta.frame_x[ii]]
+        y = meta.frame_y_to_axis[meta.frame_y[ii]]
+
+        buffer_x = x - chunk[1].start
+        buffer_y = y - chunk[2].start
+        assert buffer_x < chunk[1].stop
+        assert buffer_y < chunk[2].stop
+        assert buffer_x >= 0
+        assert buffer_y >= 0
+
+        tic_values[x, y] = D.frames["SummedIntensities"][ii]
+
+        data = np.vstack(
+            [
+                frame["mz"],
+                frame["inv_ion_mobility"],
+            ],
+        )
+        sort_inx = np.lexsort(data)  # lexsort sorts last column first.
+        intensity = frame["intensity"][sort_inx]
+        data = data[:, sort_inx]
+
+        iim_bin_inx = np.digitize(data[1, :], bins=meta.iim_edges) - 1
+        assert np.all(iim_bin_inx >= 0)
+        assert np.all(iim_bin_inx < len(meta.iim_edges) - 1)
+
+        mobiligram_values = np.bincount(
+            iim_bin_inx, weights=intensity, minlength=len(meta.iim_edges) - 1
+        )
+
+        mz_v, _ = np.histogram(data[0, :], bins=meta.mz_edges, weights=intensity)
+        mz_spectrum += mz_v
+
+        if args.inflate_mz:
+            assert meta.mass_edges is not None
+            result, _, _ = np.histogram2d(
+                data[1, :],
+                data[0, :],
+                bins=[meta.iim_edges, meta.mass_edges],
+                weights=intensity,
+            )
+        else:
+            iim = np.bincount(iim_bin_inx, minlength=len(meta.iim_edges) - 1)
+            result = np.zeros(meta.chunker.data_shape[3:])
+            iim_end = np.cumsum(iim)
+            iim_start = np.concatenate([[0], iim_end[:-1]])
+
+            scan_inx = np.repeat(np.arange(len(iim)), iim)
+            data_inx = np.arange(len(intensity))
+            start_inx = np.searchsorted(iim_start, data_inx, side="right")
+            mass_inx = data_inx - iim_start[start_inx]
+
+            result = np.zeros((meta.shape[3], meta.shape[4]), dtype=np.uint32)
+            mass_result = np.full((meta.shape[3], meta.shape[4]), meta.initial_mass)
+
+            mass_result[scan_inx, mass_inx] = data[0, :]
+            result[scan_inx, mass_inx] = intensity
+
+            mz_buffer[0, buffer_x, buffer_y, :, :] = mass_result
+            # nxs.root.spectra.data.mass[0, x, y, :, :] = mass_result
+
+        int_buffer[0, buffer_x, buffer_y, :, :] = result
+        # nxs.root.spectra.data.signal[0, x, y, :, :] = result
+    return mz_buffer, int_buffer
 
 
 def process(args: ProcessArgs, config: dict[str, Any]):
 
     with load_opentims(args.in_path) as D:
-        axes, shape, frame_x, x_dict, frame_y, y_dict, iim_edges = read_axes(args, D)
-
-        d = D.table2dict("MaldiFrameInfo")
-        frame_x = d["XIndexPos"]
-        frame_y = d["YIndexPos"]
+        (
+            axes,
+            shape,
+            frame_inx,
+            frame_x,
+            frame_x_to_axis,
+            frame_y,
+            frame_y_to_axis,
+            iim_edges,
+        ) = read_axes(args, D)
 
         field_options = FieldOptions(
             compression=hdf5plugin.Blosc(),
             compression_opts=None,
-            max_items_per_chunk=min(int(np.prod(shape[3:])), 1024 * 512),
+            max_items_per_chunk=1024 * 1024 * 8,
             shuffle=True,
         )
-
         chunker = Chunker.from_max_item_count(
             data_shape=shape,
             priorities=(4, 3, 3, 2, 1),
             items_per_chunk=field_options.max_items_per_chunk,
         )
-        memory = Chunker.from_max_item_count(
+
+        memory = Chunker.from_chunk_shape(
             data_shape=shape,
-            priorities=(4, 3, 3, 2, 1),
-            items_per_chunk=1024 * 1024 * 256,
+            chunk_shape=Shape(
+                [
+                    chunker.chunk_shape[0],
+                    chunker.chunk_shape[1] * 4,
+                    chunker.chunk_shape[2] * 4,
+                    *chunker.chunk_shape[3:],
+                ]
+            ),
         )
+
         mass_axis, mass_edges = create_mass_axis(
             args, D, shape, chunker.chunk_shape, "float32", field_options
         )
@@ -283,10 +420,11 @@ def process(args: ProcessArgs, config: dict[str, Any]):
         print(
             f" and a chunk size of {np.prod(chunker.chunk_shape)} items ({format_bytes(np.prod(chunker.chunk_shape) * 4)})."
         )
+        print(
+            f" Using a memory chunk shape of {memory.chunk_shape} with {np.prod(memory.chunk_shape)} items ({format_bytes(np.prod(memory.chunk_shape) * 4 * 2)}),"
+        )
 
         args.nxs_out_path.parent.mkdir(parents=True, exist_ok=True)
-
-        frame_count = D.frames["NumPeaks"].size
 
         nxs = NexusFile(args.nxs_out_path, mode="w")
         with nxs.as_context() as nx_fle:
@@ -363,68 +501,36 @@ def process(args: ProcessArgs, config: dict[str, Any]):
             )
             mz_spectrum = np.zeros(mz_edges[1:].shape, dtype=np.float64)
 
+            meta = IndexingData(
+                frame_inx=frame_inx,
+                frame_x=frame_x,
+                frame_y=frame_y,
+                frame_x_to_axis=frame_x_to_axis,
+                frame_y_to_axis=frame_y_to_axis,
+                shape=shape,
+                chunker=chunker,
+                initial_mass=initial_mass,
+                iim_edges=iim_edges,
+                mz_edges=mz_edges,
+            )
+
             print("Writing data:")
-            for ii, frame in enumerate(
-                tqdm(
-                    D.query_iter(D.ms1_frames, columns=D.all_columns), total=frame_count
-                )
+            chunk_count = int(np.prod(memory.chunk_count))
+            for ii, chunk in enumerate(
+                tqdm(memory.chunks(), total=chunk_count, smoothing=0.01, desc="chunks")
             ):
-                assert np.all(frame["frame"] == ii + 1)
-                x = x_dict[frame_x[ii]]
-                y = y_dict[frame_y[ii]]
-
-                tic_values[x, y] = D.frames["SummedIntensities"][ii]
-
-                data = np.vstack(
-                    [
-                        frame["mz"],
-                        frame["inv_ion_mobility"],
-                    ],
+                mz_buffer, int_buffer = fill_memory_block(
+                    args,
+                    D,
+                    meta,
+                    chunk,
+                    tic_values,
+                    mobiligram_values,
+                    mz_spectrum,
                 )
-                sort_inx = np.lexsort(data)  # lexsort sorts last column first.
-                intensity = frame["intensity"][sort_inx]
-                data = data[:, sort_inx]
-
-                iim_bin_inx = np.digitize(data[1, :], bins=iim_edges) - 1
-                assert np.all(iim_bin_inx >= 0)
-                assert np.all(iim_bin_inx < len(iim_edges) - 1)
-
-                mobiligram_values = np.bincount(
-                    iim_bin_inx, weights=intensity, minlength=len(iim_edges) - 1
-                )
-
-                mz_v, _ = np.histogram(data[0, :], bins=mz_edges, weights=intensity)
-                mz_spectrum += mz_v
-
-                if args.inflate_mz:
-                    assert mass_edges is not None
-                    result, _, _ = np.histogram2d(
-                        data[1, :],
-                        data[0, :],
-                        bins=[iim_edges, mass_edges],
-                        weights=intensity,
-                    )
-                else:
-                    iim = np.bincount(iim_bin_inx, minlength=len(iim_edges) - 1)
-                    result = np.zeros(chunker.data_shape[3:])
-                    iim_end = np.cumsum(iim)
-                    iim_start = np.concatenate([[0], iim_end[:-1]])
-
-                    scan_inx = np.repeat(np.arange(len(iim)), iim)
-                    data_inx = np.arange(len(intensity))
-                    start_inx = np.searchsorted(iim_start, data_inx, side="right")
-                    mass_inx = data_inx - iim_start[start_inx]
-
-                    result = np.zeros((shape[3], shape[4]), dtype=np.uint32)
-                    mass_result = np.full((shape[3], shape[4]), initial_mass)
-
-                    mass_result[scan_inx, mass_inx] = data[0, :]
-                    result[scan_inx, mass_inx] = intensity
-                    nxs.root.spectra.data.mass[0, x, y, :, :] = mass_result
-
-                nxs.root.spectra.data.signal[0, x, y, :, :] = result
-                if ii > 500:
-                    break
+                buffer_chunk = [slice(0, c.stop - c.start) for c in chunk]
+                nxs.root.spectra.data.mass[*chunk] = mz_buffer[...]
+                nxs.root.spectra.data.signal[*chunk] = int_buffer[...]
             nxs.root.tic.data.signal[0, :, :] = tic_values
             nxs.root.mobiligram.data.signal[0, :] = mobiligram_values
             nxs.root.mz_spectrum.data.signal[0, :] = mz_spectrum
