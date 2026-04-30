@@ -18,6 +18,7 @@ dependencies = [
 
 [project.scripts]
 main = "bruker_reader:main"
+query = "bruker_reader:query_data"
 scratch = "bruker_reader:scratch"
 
 [build-system]
