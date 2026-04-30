@@ -283,7 +283,7 @@ def plot_image(
     )
     im = ax.imshow(
         img.T,
-        cmap="inferno",
+        cmap="viridis",
         extent=(mnx, mxx, mny, mxy),
         origin="lower",
     )

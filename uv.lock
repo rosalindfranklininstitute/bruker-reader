@@ -17,6 +17,7 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "datargs" },
+    { name = "hdf5plugin" },
     { name = "icecream" },
     { name = "ms-nexus-tools" },
     { name = "opentims-bruker-bridge" },
@@ -33,6 +34,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "datargs", editable = "../datargs" },
+    { name = "hdf5plugin", specifier = ">=6.0.0" },
     { name = "icecream", specifier = ">=2.2.0" },
     { name = "ms-nexus-tools", editable = "../ms-nexus-tools" },
     { name = "opentims-bruker-bridge", specifier = ">=1.2.0" },

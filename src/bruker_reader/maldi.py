@@ -8,7 +8,7 @@ import os
 
 import numpy as np
 
-from h5py import h5s
+import hdf5plugin
 
 # from ms_nexus_tools.lib.utils import NotTqdm as tqdm
 from tqdm import tqdm
@@ -99,23 +99,45 @@ def read_metadata(args, D) -> Metadata:
         max_mz=D.max_mz,
         min_inv_ion_mobility=D.min_inv_ion_mobility,
         max_inv_ion_mobility=D.max_inv_ion_mobility,
-        min_x=D.GlobalMetaData["ImagingAreaMinXPos"],
-        max_x=D.GlobalMetaData["ImagingAreaMaxXPos"],
-        min_y=D.GlobalMetaData["ImagingAreaMinYPos"],
-        max_y=D.GlobalMetaData["ImagingAreaMaxYPos"],
+        min_x=D.GlobalMetadata["ImagingAreaMinXIndexPos"],
+        max_x=D.GlobalMetadata["ImagingAreaMaxXIndexPos"],
+        min_y=D.GlobalMetadata["ImagingAreaMinYIndexPos"],
+        max_y=D.GlobalMetadata["ImagingAreaMaxYIndexPos"],
     )
+
+
+def get_mass_bin_width(args, D):
+    if args.mass_bin_width is None:
+        mz_range = D.max_mz - D.min_mz
+        min_tof, max_tof = D.mz_to_tof([D.min_mz, D.max_mz], [1, 1])
+        tof_range = max_tof - min_tof
+        mass_count = int(tof_range / 100)
+        return mz_range / mass_count
+    else:
+        return args.mass_bin_width
+
+
+def get_mass_count(args, D) -> int:
+    if args.inflate_mz:
+        mz_range = D.max_mz - D.min_mz
+        if args.mass_bin_width is None:
+            min_tof, max_tof = D.mz_to_tof([D.min_mz, D.max_mz], [1, 1])
+            tof_range = max_tof - min_tof
+            return int(tof_range / 100)
+        else:
+            return int(round(mz_range / args.mass_bin_width))
+    else:
+        return int(D.GlobalMetadata["MaxNumPeaksPerScan"])
 
 
 def create_mass_axis(
     args, D, shape: Shape, chunk_shape: Shape, dtype: str, field_options: FieldOptions
 ):
     mass_count = shape[4]
-    if args.inflate_data:
+    if args.inflate_mz:
         mz_range = D.max_mz - D.min_mz
         if args.mass_bin_width is None:
             args.mass_bin_width = mz_range / mass_count
-        else:
-            mass_count = int(round(mz_range / args.mass_bin_width))
         mass_edges = np.array(
             [ii * args.mass_bin_width + D.min_mz for ii in range(mass_count + 1)]
         )
@@ -182,17 +204,7 @@ def read_axes(
     )
     print(f" Output has be {image_shape[2]} Inverse Ion Mobility values.")
 
-    if args.inflate_data:
-        mz_range = D.max_mz - D.min_mz
-        if args.mass_bin_width is None:
-            min_tof, max_tof = D.mz_to_tof([D.min_mz, D.max_mz], [1, 1])
-            tof_range = max_tof - min_tof
-            mass_count = int(tof_range / 100)
-            args.mass_bin_width = mz_range / mass_count
-        else:
-            mass_count = int(round(mz_range / args.mass_bin_width))
-    else:
-        mass_count = int(D.GlobalMetadata["MaxNumPeaksPerScan"])
+    mass_count = get_mass_count(args, D)
 
     shape = (1, *image_shape, mass_count)
 
@@ -242,8 +254,8 @@ def process(args: ProcessArgs, config: dict[str, Any]):
         frame_y = d["YIndexPos"]
 
         field_options = FieldOptions(
-            compression="gzip",
-            compression_opts=3,
+            compression=hdf5plugin.Blosc(),
+            compression_opts=None,
             max_items_per_chunk=min(int(np.prod(shape[3:])), 1024 * 512),
             shuffle=True,
         )
@@ -252,6 +264,11 @@ def process(args: ProcessArgs, config: dict[str, Any]):
             data_shape=shape,
             priorities=(4, 3, 3, 2, 1),
             items_per_chunk=field_options.max_items_per_chunk,
+        )
+        memory = Chunker.from_max_item_count(
+            data_shape=shape,
+            priorities=(4, 3, 3, 2, 1),
+            items_per_chunk=1024 * 1024 * 256,
         )
         mass_axis, mass_edges = create_mass_axis(
             args, D, shape, chunker.chunk_shape, "float32", field_options
@@ -264,7 +281,7 @@ def process(args: ProcessArgs, config: dict[str, Any]):
             f" With a chunk shape of {chunker.chunk_shape} and a chunk count of {chunker.chunk_count},"
         )
         print(
-            f" and a chunk size of {np.prod(chunker.chunk_shape)} items ({format_bytes(np.prod(chunker.chunk_shape))})."
+            f" and a chunk size of {np.prod(chunker.chunk_shape)} items ({format_bytes(np.prod(chunker.chunk_shape) * 4)})."
         )
 
         args.nxs_out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -277,7 +294,7 @@ def process(args: ProcessArgs, config: dict[str, Any]):
             for key, value in asdict(metadata).items():
                 nxs.instrument.attrs[key] = value
 
-            spectra = nxs.create_subentry(
+            nxs.create_subentry(
                 "spectra",
                 create_field(
                     dtype="uint32",
@@ -289,7 +306,7 @@ def process(args: ProcessArgs, config: dict[str, Any]):
                 ),
                 axes=axes,
             )
-            tic = nxs.create_subentry(
+            nxs.create_subentry(
                 "tic",
                 create_field(
                     dtype="uint32",
@@ -302,7 +319,7 @@ def process(args: ProcessArgs, config: dict[str, Any]):
                 axes=GenericAxis([axes[1], axes[2]]),
             )
 
-            mobiligram = nxs.create_subentry(
+            nxs.create_subentry(
                 "mobiligram",
                 create_field(
                     dtype="uint32",
@@ -310,6 +327,21 @@ def process(args: ProcessArgs, config: dict[str, Any]):
                     compression=field_options.compression,
                     compression_opts=field_options.compression_opts,
                     chunks=(1, shape[3]),
+                    shuffle=field_options.shuffle,
+                ),
+                axes=GenericAxis([axes[3]]),
+            )
+
+            mass_bin_width = get_mass_bin_width(args, D)
+            mass_count = int(round((D.max_mz - D.min_mz) / mass_bin_width))
+            nxs.create_subentry(
+                "mz_spectrum",
+                create_field(
+                    dtype="uint32",
+                    shape=(1, mass_count),
+                    compression=field_options.compression,
+                    compression_opts=field_options.compression_opts,
+                    chunks=(1, mass_count),
                     shuffle=field_options.shuffle,
                 ),
                 axes=GenericAxis([axes[3]]),
@@ -323,7 +355,13 @@ def process(args: ProcessArgs, config: dict[str, Any]):
                 endpoint=False,
             )
 
-            mobiligram_values = np.zeros((shape[3]))
+            mobiligram_values = np.zeros((shape[3]), dtype=np.uint32)
+            tic_values = np.zeros(shape[1:3], dtype=np.uint32)
+
+            mz_edges = np.linspace(
+                D.min_mz, D.max_mz, endpoint=True, num=mass_count + 1
+            )
+            mz_spectrum = np.zeros(mz_edges[1:].shape, dtype=np.float64)
 
             print("Writing data:")
             for ii, frame in enumerate(
@@ -335,48 +373,58 @@ def process(args: ProcessArgs, config: dict[str, Any]):
                 x = x_dict[frame_x[ii]]
                 y = y_dict[frame_y[ii]]
 
-                nxs.root.tic.data.signal[0, x, y] = D.frames["SummedIntensities"][ii]
+                tic_values[x, y] = D.frames["SummedIntensities"][ii]
+
+                data = np.vstack(
+                    [
+                        frame["mz"],
+                        frame["inv_ion_mobility"],
+                    ],
+                )
+                sort_inx = np.lexsort(data)  # lexsort sorts last column first.
+                intensity = frame["intensity"][sort_inx]
+                data = data[:, sort_inx]
+
+                iim_bin_inx = np.digitize(data[1, :], bins=iim_edges) - 1
+                assert np.all(iim_bin_inx >= 0)
+                assert np.all(iim_bin_inx < len(iim_edges) - 1)
+
+                mobiligram_values = np.bincount(
+                    iim_bin_inx, weights=intensity, minlength=len(iim_edges) - 1
+                )
+
+                mz_v, _ = np.histogram(data[0, :], bins=mz_edges, weights=intensity)
+                mz_spectrum += mz_v
 
                 if args.inflate_mz:
                     assert mass_edges is not None
                     result, _, _ = np.histogram2d(
-                        frame["inv_ion_mobility"],
-                        frame["mz"],
+                        data[1, :],
+                        data[0, :],
                         bins=[iim_edges, mass_edges],
-                        weights=frame["intensity"],
+                        weights=intensity,
                     )
                 else:
-                    data = np.vstack(
-                        [
-                            frame["intensity"],
-                            frame["mz"],
-                            frame["inv_ion_mobility"],
-                        ],
-                    )
-                    sort_inx = np.lexsort(data)  # lexsort sorts last column first.
-                    data = data[:, sort_inx]
-
-                    iim, _ = np.histogram(data[2, :], bins=iim_edges)
+                    iim = np.bincount(iim_bin_inx, minlength=len(iim_edges) - 1)
                     result = np.zeros(chunker.data_shape[3:])
                     iim_end = np.cumsum(iim)
                     iim_start = np.concatenate([[0], iim_end[:-1]])
 
                     scan_inx = np.repeat(np.arange(len(iim)), iim)
-                    data_inx = np.arange(data.shape[1])
+                    data_inx = np.arange(len(intensity))
                     start_inx = np.searchsorted(iim_start, data_inx, side="right")
                     mass_inx = data_inx - iim_start[start_inx]
 
                     result = np.zeros((shape[3], shape[4]), dtype=np.uint32)
                     mass_result = np.full((shape[3], shape[4]), initial_mass)
 
-                    mass_result[scan_inx, mass_inx] = data[1, :]
-                    result[scan_inx, mass_inx] = data[0, :]
-                    mobiligram_v, _ = np.histogram(
-                        data[2, :], bins=iim_edges, weights=data[0, :]
-                    )
-
-                    mobiligram_values += mobiligram_v
+                    mass_result[scan_inx, mass_inx] = data[0, :]
+                    result[scan_inx, mass_inx] = intensity
                     nxs.root.spectra.data.mass[0, x, y, :, :] = mass_result
 
                 nxs.root.spectra.data.signal[0, x, y, :, :] = result
+                if ii > 500:
+                    break
+            nxs.root.tic.data.signal[0, :, :] = tic_values
             nxs.root.mobiligram.data.signal[0, :] = mobiligram_values
+            nxs.root.mz_spectrum.data.signal[0, :] = mz_spectrum
