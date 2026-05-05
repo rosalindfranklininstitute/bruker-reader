@@ -6,6 +6,9 @@ from dataclasses import dataclass, asdict
 import sys
 import os
 
+from threading import Lock, local
+import concurrent.futures as cfutures
+
 import numpy as np
 
 import hdf5plugin
@@ -288,7 +291,7 @@ def fill_memory_block(
     tic_values,
     mobiligram_values,
     mz_spectrum,
-):
+) -> tuple[np.ndarray, np.ndarray]:
     mz_buffer = np.zeros(chunk.shape, dtype=np.float32)
     int_buffer = np.zeros(chunk.shape, dtype=np.uint32)
 
@@ -329,19 +332,20 @@ def fill_memory_block(
         assert np.all(iim_bin_inx >= 0)
         assert np.all(iim_bin_inx < len(meta.iim_edges) - 1)
 
-        mobiligram_values = np.bincount(
+        tmp = np.bincount(
             iim_bin_inx, weights=intensity, minlength=len(meta.iim_edges) - 1
         )
-
+        tmp = tmp.astype(np.uint32)
+        mobiligram_values += tmp
         mz_v, _ = np.histogram(data[0, :], bins=meta.mz_edges, weights=intensity)
         mz_spectrum += mz_v
 
         if args.inflate_mz:
-            assert meta.mass_edges is not None
+            assert meta.mz_edges is not None
             result, _, _ = np.histogram2d(
                 data[1, :],
                 data[0, :],
-                bins=[meta.iim_edges, meta.mass_edges],
+                bins=[meta.iim_edges, meta.mz_edges],
                 weights=intensity,
             )
         else:
@@ -367,6 +371,13 @@ def fill_memory_block(
         int_buffer[0, buffer_x, buffer_y, :, :] = result
         # nxs.root.spectra.data.signal[0, x, y, :, :] = result
     return mz_buffer, int_buffer
+
+
+def write_to_nxs(
+    nxs: NexusFile, memory_chunk: Chunk, mz_buffer: np.ndarray, int_buffer: np.ndarray
+):
+    nxs.root.spectra.data.mass[*memory_chunk] = mz_buffer[...]
+    nxs.root.spectra.data.signal[*memory_chunk] = int_buffer[...]
 
 
 def process(args: ProcessArgs, config: dict[str, Any]):
@@ -407,6 +418,29 @@ def process(args: ProcessArgs, config: dict[str, Any]):
             ),
         )
 
+        initial_mass = np.linspace(
+            D.min_mz - 1,
+            D.min_mz,
+            num=shape[4],
+            dtype=np.float32,
+            endpoint=False,
+        )
+        mass_bin_width = get_mass_bin_width(args, D)
+        mass_count = int(round((D.max_mz - D.min_mz) / mass_bin_width))
+        mz_edges = np.linspace(D.min_mz, D.max_mz, endpoint=True, num=mass_count + 1)
+        meta = IndexingData(
+            frame_inx=frame_inx,
+            frame_x=frame_x,
+            frame_y=frame_y,
+            frame_x_to_axis=frame_x_to_axis,
+            frame_y_to_axis=frame_y_to_axis,
+            shape=shape,
+            chunker=chunker,
+            initial_mass=initial_mass,
+            iim_edges=iim_edges,
+            mz_edges=mz_edges,
+        )
+
         mass_axis, mass_edges = create_mass_axis(
             args, D, shape, chunker.chunk_shape, "float32", field_options
         )
@@ -427,7 +461,7 @@ def process(args: ProcessArgs, config: dict[str, Any]):
         args.nxs_out_path.parent.mkdir(parents=True, exist_ok=True)
 
         nxs = NexusFile(args.nxs_out_path, mode="w")
-        with nxs.as_context() as nx_fle:
+        with nxs.as_context():
             metadata = read_metadata(args, D)
             for key, value in asdict(metadata).items():
                 nxs.instrument.attrs[key] = value
@@ -454,7 +488,7 @@ def process(args: ProcessArgs, config: dict[str, Any]):
                     chunks=(1, *shape[1:3]),
                     shuffle=field_options.shuffle,
                 ),
-                axes=GenericAxis([axes[1], axes[2]]),
+                axes=GenericAxis([axes[0], axes[1], axes[2]]),
             )
 
             nxs.create_subentry(
@@ -467,70 +501,83 @@ def process(args: ProcessArgs, config: dict[str, Any]):
                     chunks=(1, shape[3]),
                     shuffle=field_options.shuffle,
                 ),
-                axes=GenericAxis([axes[3]]),
+                axes=GenericAxis(
+                    [axes[0], [axes[3][0].copy_with_incremented_indices(-2)]]
+                ),
             )
 
-            mass_bin_width = get_mass_bin_width(args, D)
-            mass_count = int(round((D.max_mz - D.min_mz) / mass_bin_width))
             nxs.create_subentry(
                 "mz_spectrum",
                 create_field(
                     dtype="uint32",
-                    shape=(1, mass_count),
+                    shape=(1, len(meta.mz_edges[1:])),
                     compression=field_options.compression,
                     compression_opts=field_options.compression_opts,
-                    chunks=(1, mass_count),
+                    chunks=(1, len(meta.mz_edges[1:])),
                     shuffle=field_options.shuffle,
                 ),
-                axes=GenericAxis([axes[3]]),
-            )
-
-            initial_mass = np.linspace(
-                D.min_mz - 1,
-                D.min_mz,
-                num=shape[4],
-                dtype=np.float32,
-                endpoint=False,
+                axes=GenericAxis(
+                    [
+                        axes[0],
+                        [
+                            Axis.create(
+                                name="mass",
+                                values=meta.mz_edges[1:],
+                                indices=[1],
+                            )
+                        ],
+                    ]
+                ),
             )
 
             mobiligram_values = np.zeros((shape[3]), dtype=np.uint32)
             tic_values = np.zeros(shape[1:3], dtype=np.uint32)
 
-            mz_edges = np.linspace(
-                D.min_mz, D.max_mz, endpoint=True, num=mass_count + 1
-            )
-            mz_spectrum = np.zeros(mz_edges[1:].shape, dtype=np.float64)
+            mz_spectrum = np.zeros(meta.mz_edges[1:].shape, dtype=np.float64)
 
-            meta = IndexingData(
-                frame_inx=frame_inx,
-                frame_x=frame_x,
-                frame_y=frame_y,
-                frame_x_to_axis=frame_x_to_axis,
-                frame_y_to_axis=frame_y_to_axis,
-                shape=shape,
-                chunker=chunker,
-                initial_mass=initial_mass,
-                iim_edges=iim_edges,
-                mz_edges=mz_edges,
-            )
+            nexus_file_lock = Lock()
+            experiment_file_lock = Lock()
 
+            def read_chunk(memory_chunk):
+                local_store = local()
+                with experiment_file_lock:
+                    local_store.mz_buffer, local_store.int_buffer = fill_memory_block(
+                        args,
+                        D,
+                        meta,
+                        memory_chunk,
+                        tic_values,
+                        mobiligram_values,
+                        mz_spectrum,
+                    )
+                with nexus_file_lock:
+                    write_to_nxs(
+                        nxs, memory_chunk, local_store.mz_buffer, local_store.int_buffer
+                    )
+
+            outer_chunks = [chunk for chunk in memory.chunks()]
+            # for memory_chunk in tqdm(
+            #     outer_chunks,
+            #     total=len(outer_chunks),
+            #     desc="  Chunks ",
+            #     leave=False,
+            # ):
+            #     read_chunk(memory_chunk)
             print("Writing data:")
-            chunk_count = int(np.prod(memory.chunk_count))
-            for ii, chunk in enumerate(
-                tqdm(memory.chunks(), total=chunk_count, smoothing=0.01, desc="chunks")
-            ):
-                mz_buffer, int_buffer = fill_memory_block(
-                    args,
-                    D,
-                    meta,
-                    chunk,
-                    tic_values,
-                    mobiligram_values,
-                    mz_spectrum,
-                )
-                buffer_chunk = [slice(0, c.stop - c.start) for c in chunk]
-                nxs.root.spectra.data.mass[*chunk] = mz_buffer[...]
-                nxs.root.spectra.data.signal[*chunk] = int_buffer[...]
+            with cfutures.ThreadPoolExecutor(max_workers=2) as executor:
+                futures = [
+                    executor.submit(read_chunk, memory_chunk)
+                    for memory_chunk in outer_chunks
+                ]
+
+                for memory_chunk in tqdm(
+                    cfutures.as_completed(futures),
+                    total=len(outer_chunks),
+                    desc="  Chunks ",
+                    leave=False,
+                ):
+                    pass
+
             nxs.root.tic.data.signal[0, :, :] = tic_values
             nxs.root.mobiligram.data.signal[0, :] = mobiligram_values
             nxs.root.mz_spectrum.data.signal[0, :] = mz_spectrum
