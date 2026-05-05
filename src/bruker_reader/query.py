@@ -1,16 +1,24 @@
 import itertools
-from typing import Any, Union, Protocol, cast, Generic, TypeVar
+import math
+import time
+from typing import Any, cast, Generic, TypeVar
 from bisect import bisect_left, bisect_right
 from pathlib import Path
 from dataclasses import dataclass, asdict
+import tracemalloc, linecache, os
+from tracemalloc import Statistic, StatisticDiff, Snapshot
 
 from datargs.config_args import ConfigFileArgs
 from datargs.interactive_args import InteractiveArgs
 from datargs.extra_types import FilePathType, DirPathType
 from datargs.args import arg_field
 
-from ms_nexus_tools.lib.utils import slice_range
+from ms_nexus_tools.lib.utils import slice_range, format_bytes
 from ms_nexus_tools.lib.nxs import NexusFile
+from ms_nexus_tools.lib.chunking import Chunker
+from ms_nexus_tools.lib.bounds import Chunk, Shape
+
+import hdf5plugin
 
 from tqdm import tqdm
 
@@ -26,6 +34,78 @@ from .maldi import MZSpectraType, Metadata
 
 Float1D32 = np.ndarray[tuple[int], np.dtype[np.float32]]
 Int1D32 = np.ndarray[tuple[int], np.dtype[np.int32]]
+
+
+snapshot: Snapshot | None = None
+
+
+def push_snapshot():
+    global snapshot
+    if False:
+        new_snapshot = tracemalloc.take_snapshot()
+        new_snapshot = new_snapshot.filter_traces(
+            (
+                tracemalloc.Filter(False, "<frozen importlib._bootstrap>"),
+                tracemalloc.Filter(False, "<unknown>"),
+            )
+        )
+        display_top(new_snapshot.statistics("lineno"))
+        if snapshot is not None:
+            display_diff(new_snapshot.compare_to(snapshot, "lineno"))
+        snapshot = new_snapshot
+
+
+def display_top(top_stats: list[Statistic], limit=5):
+
+    print(" ===== ")
+    print("Top %s lines" % limit)
+    for index, stat in enumerate(top_stats[:limit], 1):
+        frame = stat.traceback[0]
+        print(
+            "#%s: %s:%s: %s"
+            % (
+                index,
+                Path(*Path(frame.filename).parts[-3:]),
+                frame.lineno,
+                format_bytes(stat.size),
+            )
+        )
+        line = linecache.getline(frame.filename, frame.lineno).strip()
+        if line:
+            print("    %s" % line)
+
+    other = top_stats[limit:]
+    if other:
+        size = sum(stat.size for stat in other)
+        print("%s other: %s" % (len(other), format_bytes(size)))
+    total = sum(stat.size for stat in top_stats)
+    print("Total allocated size: %s" % format_bytes(total))
+
+
+def display_diff(top_stats: list[StatisticDiff], limit=5):
+
+    print(" >> Diff %s lines" % limit)
+    for index, stat in enumerate(top_stats[:limit], 1):
+        frame = stat.traceback[0]
+        print(
+            "#%s: %s:%s: %s"
+            % (
+                index,
+                Path(*Path(frame.filename).parts[-3:]),
+                frame.lineno,
+                format_bytes(stat.size_diff),
+            )
+        )
+        line = linecache.getline(frame.filename, frame.lineno).strip()
+        if line:
+            print("    %s" % line)
+
+    other = top_stats[limit:]
+    if other:
+        size_diff = sum(stat.size_diff for stat in other)
+        print("%s other: %s" % (len(other), format_bytes(size_diff)))
+    total_diff = sum(stat.size_diff for stat in top_stats)
+    print("Total allocated size: %s" % format_bytes(total_diff))
 
 
 def _slice_from_axis(start: float, stop: float, values: Float1D32) -> slice:
@@ -68,7 +148,7 @@ class MZSlice:
     def mz_slice(self, mz_values: Float1D32) -> slice:
         return _slice_from_axis(self.mz_start, self.mz_stop, mz_values)
 
-    def mz_mask(self, mz_values: np.ndarray) -> np.ndarray:
+    def mz_mask(self, mz_values: np.ndarray) -> tuple[np.ndarray, ...]:
         return np.nonzero((mz_values >= self.mz_start) & (mz_values < self.mz_stop))
 
 
@@ -178,11 +258,6 @@ class ProcessArgs(ConfigFileArgs, InteractiveArgs):
         doc="The output folder to write to.",
         required=True,
         default=None,
-    )
-
-    mz_bin_width: float = arg_field(
-        default=None,
-        doc="If specified this will be used as the width of the mz bins used to plot the mz spectrum over the whole image.",
     )
 
     mz_iim_selection: list[list[str]] = arg_field(
@@ -396,7 +471,43 @@ def plot_mz(
     plt.close(fig)
 
 
+def calculate_memory_chunks(
+    data_shape: Shape, data_chunk_shape: Shape, max_memory: int
+) -> Chunker:
+    chunk_memory = np.prod(data_chunk_shape) * 4
+    chunks_per_memory = Chunker.from_max_item_count(
+        tuple([ds // cs for ds, cs in zip(data_shape[1:3], data_chunk_shape[1:3])]),
+        priorities=(1, 2),
+        items_per_chunk=int(math.floor(max_memory / (chunk_memory * 2))),
+    )
+
+    memory = Chunker.from_chunk_shape(
+        data_shape,
+        Shape(
+            [
+                data_chunk_shape[0],
+                data_chunk_shape[1] * chunks_per_memory.chunk_shape[0],
+                data_chunk_shape[2] * chunks_per_memory.chunk_shape[1],
+                *data_chunk_shape[3:],
+            ]
+        ),
+    )
+    return memory
+
+
+def read_chunk(in_path: Path, chunk: Chunk):
+    nxs = NexusFile(
+        in_path,
+        "r",
+    )
+    chunk_mz = nxs.root.spectra.data.mass[*chunk].nxdata
+    chunk_count = nxs.root.spectra.data.signal[*chunk].nxdata
+    nxs._file.close()
+    return chunk_mz, chunk_count
+
+
 def process(args: ProcessArgs, config: dict[str, Any] = {}):
+    tracemalloc.start()
 
     assert args.in_path.exists(), f"The input file {args.in_path} was not found"
     args.out_path.mkdir(parents=True, exist_ok=True)
@@ -417,7 +528,12 @@ def process(args: ProcessArgs, config: dict[str, Any] = {}):
     ]
     mz_iim_xy_selections.extend(MzIIMXYSelect.read_csv(args.mz_iim_xy_csv))
 
-    nxs = NexusFile(args.in_path, "r")
+    push_snapshot()
+
+    nxs = NexusFile(
+        args.in_path,
+        "r",
+    )
     with nxs.as_context() as nx_fle:
         metadata = Metadata(MZSpectraType.PEAKS, -1, -1, -1, -1, -1, -1, -1, -1)
         md_dict = asdict(metadata)
@@ -429,17 +545,13 @@ def process(args: ProcessArgs, config: dict[str, Any] = {}):
         x_values = nxs.root.spectra.data.x.nxdata
         y_values = nxs.root.spectra.data.y.nxdata
         iim_values = nxs.root.spectra.data.inv_ion_mobility.nxdata
+        iim_spectrum = nxs.root.mobiligram.data.signal[0, :].nxdata
+        mz_values = nxs.root.mz_spectrum.data.mass.nxdata
+        mz_spectrum = nxs.root.mz_spectrum.data.signal[0, :].nxdata
+        tic_image = nxs.root.tic.data.signal[0, :, :].nxdata
 
         nx = len(x_values)
         ny = len(y_values)
-
-        if args.mz_bin_width is not None:
-            min_mz = 50
-            max_mz = 1200
-            bins = int(np.ceil((max_mz - min_mz) / args.mz_bin_width))
-            mz_edges = np.linspace(min_mz, max_mz, endpoint=True, num=bins)
-            mz_values = mz_edges[1:]
-            mz_spectrum = np.zeros(mz_values.shape)
 
         mz_iim_slices: list[slice] = []
         for sel in mz_iim_selections:
@@ -457,9 +569,6 @@ def process(args: ProcessArgs, config: dict[str, Any] = {}):
         mz_iim_xy_slices: list[slice] = [
             sel.iim_slice(iim_values) for sel in mz_iim_xy_selections
         ]
-        mz_iim_xy_starts: Float1D32 = np.array(
-            [sel.iim_start for sel in mz_iim_xy_selections]
-        )
 
         mz_iim_xy_indices: dict[tuple[int, int], list[int]] = {}
         for ii, sel in enumerate(mz_iim_xy_selections):
@@ -470,22 +579,55 @@ def process(args: ProcessArgs, config: dict[str, Any] = {}):
                     mz_iim_xy_indices[xy] = []
                 mz_iim_xy_indices[xy].append(ii)
 
-        total_xy = [xy for xy in itertools.product(range(nx), range(ny))]
-
         images = np.zeros((nx, ny, len(mz_iim_selections)))
         iims = np.zeros((len(iim_values), len(mz_iim_selections)))
         totals = np.zeros((len(mz_iim_xy_selections)))
 
-        for xy_ii, xy in enumerate(tqdm(total_xy, smoothing=0.1)):
-            x, y = xy
-            sel_mz = nxs.root.spectra.data.mass[0, x, y, :, :]
-            sel_count = nxs.root.spectra.data.signal[0, x, y, :, :]
+        data_shape = nxs.root.spectra.data.signal.shape
+        data_chunk_shape = nxs.root.spectra.data.signal.chunks
+        max_memory = 1024 * 1024 * 1024 * 2
 
-            if args.mz_bin_width is not None:
-                spec, _ = np.histogram(
-                    sel_mz.ravel(), mz_edges, weights=sel_count.ravel()
-                )
-                mz_spectrum += spec
+        memory = calculate_memory_chunks(data_shape, data_chunk_shape, max_memory)
+
+        print(f" Using maximum memory of ({format_bytes(max_memory)}).")
+        print(
+            f" Data has a shape {data_shape} and a chunk shape of {data_chunk_shape},"
+        )
+        print(
+            f" and a chunk size of {np.prod(data_chunk_shape)} items ({format_bytes(np.prod(data_chunk_shape) * 4)})."
+        )
+        chunk_memory = np.prod(memory.chunk_shape) * 4
+        print(
+            f" Using a memory chunk shape of {memory.chunk_shape} with {np.prod(memory.chunk_shape)} items ({format_bytes(chunk_memory)}*2 = {format_bytes(chunk_memory * 2)}),"
+        )
+    push_snapshot()
+
+    memory_chunks = [c for c in memory.chunks()]
+    start = time.monotonic()
+    xy_count = 0
+    xy_total_count = np.prod(data_shape[:3])
+    chunk_mz = np.zeros(memory.chunk_shape)
+    chunk_count = np.zeros(memory.chunk_shape)
+    for file_chunk in tqdm(memory_chunks, smoothing=0.01):
+        push_snapshot()
+        chunk_mz, chunk_count = read_chunk(args.in_path, file_chunk)
+        # if time.monotonic() - start > 60:
+        #     break
+
+        total_xy = [
+            xy
+            for xy in itertools.product(
+                slice_range(file_chunk[1]), slice_range(file_chunk[2])
+            )
+        ]
+
+        for xy in total_xy:
+            xy_count += 1
+            x, y = xy
+            x_ii = x - file_chunk[1].start
+            y_ii = y - file_chunk[2].start
+            sel_mz = chunk_mz[0, x_ii, y_ii, :, :]
+            sel_count = chunk_count[0, x_ii, y_ii, :, :]
 
             if xy in mz_xy_indices:
                 for pix, (mz, count) in enumerate(zip(sel_mz, sel_count)):
@@ -507,74 +649,76 @@ def process(args: ProcessArgs, config: dict[str, Any] = {}):
                 sub_sel_count = sel_count[mz_iim_slices[ii], :]
                 mz_mask = mz_iim_sel.mz_mask(sub_sel_mz)
                 images[x, y, ii] = np.sum(sub_sel_count[mz_mask])
+        push_snapshot()
+    stop = time.monotonic()
+    print(
+        f"Processed {xy_count} of {xy_total_count} ({xy_count * 100 / xy_total_count:.1f}%) pixels"
+    )
+    print(f" in {stop - start:.2f} seconds.")
+    print(f" Giving {xy_count / (stop - start):.1f} pixels per second.")
 
-        color_cycle = itertools.cycle(mcolors.TABLEAU_COLORS)
+    color_cycle = itertools.cycle(mcolors.TABLEAU_COLORS)
 
-        mz_xy_plottables = [
-            Plottable(sel.title, next(color_cycle), sel) for sel in mz_xy_selections
-        ]
-        mz_iim_plottables = [
-            Plottable(sel.title, next(color_cycle), sel) for sel in mz_iim_selections
-        ]
-        mz_iim_xy_plottables = [
-            Plottable(sel.title, next(color_cycle), sel) for sel in mz_iim_xy_selections
-        ]
+    mz_xy_plottables = [
+        Plottable(sel.title, next(color_cycle), sel) for sel in mz_xy_selections
+    ]
+    mz_iim_plottables = [
+        Plottable(sel.title, next(color_cycle), sel) for sel in mz_iim_selections
+    ]
+    mz_iim_xy_plottables = [
+        Plottable(sel.title, next(color_cycle), sel) for sel in mz_iim_xy_selections
+    ]
 
+    plot_image(
+        tic_image,
+        x_values,
+        y_values,
+        cast(list[Plottable[XYRectangle]], [*mz_xy_plottables, *mz_iim_xy_plottables]),
+        "Total Image",
+        "",
+        args.out_path,
+    )
+    for ii, mz_iim_sel in enumerate(mz_iim_selections):
         plot_image(
-            nxs.root.tic.data.signal[0, :, :].nxdata,
+            images[:, :, ii],
             x_values,
             y_values,
-            cast(
-                list[Plottable[XYRectangle]], [*mz_xy_plottables, *mz_iim_xy_plottables]
-            ),
-            "Total Image",
-            "",
+            [],
+            mz_iim_sel.title,
+            mz_iim_sel.to_title(),
             args.out_path,
         )
-        for ii, mz_iim_sel in enumerate(mz_iim_selections):
-            plot_image(
-                images[:, :, ii],
-                x_values,
-                y_values,
-                [],
-                mz_iim_sel.title,
-                mz_iim_sel.to_title(),
-                args.out_path,
-            )
 
+    plot_iim(
+        iim_values,
+        iim_spectrum,
+        cast(list[Plottable[IIMSlice]], [*mz_iim_plottables, *mz_iim_xy_plottables]),
+        "Total Iim",
+        "",
+        args.out_path,
+    )
+
+    for ii, mz_xy_sel in enumerate(mz_xy_selections):
         plot_iim(
             iim_values,
-            nxs.root.mobiligram.data.signal[0, :].nxdata,
-            cast(
-                list[Plottable[IIMSlice]], [*mz_iim_plottables, *mz_iim_xy_plottables]
-            ),
-            "Total Iim",
-            "",
+            iims[:, ii],
+            [],
+            mz_xy_sel.title,
+            mz_xy_sel.to_title(),
             args.out_path,
         )
 
-        for ii, mz_xy_sel in enumerate(mz_xy_selections):
-            plot_iim(
-                iim_values,
-                iims[:, ii],
-                [],
-                mz_xy_sel.title,
-                mz_xy_sel.to_title(),
-                args.out_path,
-            )
+    plot_mz(
+        mz_values,
+        mz_spectrum,
+        cast(
+            list[Plottable[MZSlice]],
+            [*mz_iim_plottables, *mz_xy_plottables, *mz_iim_xy_plottables],
+        ),
+        "Total Mz",
+        "",
+        args.out_path,
+    )
 
-        if args.mz_bin_width is not None:
-            plot_mz(
-                mz_values,
-                mz_spectrum,
-                cast(
-                    list[Plottable[MZSlice]],
-                    [*mz_iim_plottables, *mz_xy_plottables, *mz_iim_xy_plottables],
-                ),
-                "Total Mz",
-                "",
-                args.out_path,
-            )
-
-        for ii, mz_iim_xy_sel in enumerate(mz_iim_xy_selections):
-            print(f"{ii}: {mz_iim_xy_sel.title}: {totals[ii]}")
+    for ii, mz_iim_xy_sel in enumerate(mz_iim_xy_selections):
+        print(f"{ii}: {mz_iim_xy_sel.title}: {totals[ii]}")
