@@ -14,6 +14,7 @@ dependencies = [
     "ms-nexus-tools",
     "opentims-bruker-bridge>=1.2.0",
     "opentimspy>=1.1.0",
+    "sparse>=0.18.0",
     "tqdm>=4.67.3",
 ]
 
@@ -21,6 +22,7 @@ dependencies = [
 main = "bruker_reader:main"
 query = "bruker_reader:query_data"
 scratch = "bruker_reader:scratch"
+tof = "bruker_reader:tof"
 
 [build-system]
 requires = ["uv_build>=0.10.11,<0.11.0"]
@@ -34,7 +36,7 @@ datargs = { path = "../datargs", editable = true }
 line-by-line = true
 verbose = false
 skip-zero = true
-prof-mod = ['./src/bruker_reader/', 'bruker_reader']
+prof-mod = ['./src/bruker_reader/', 'bruker_reader', '../ms-nexus-tools/src/ms_nexus_tools/', 'ms_nexus_tools']
 prof-imports = false
 
 [dependency-groups]
