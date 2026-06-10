@@ -20,21 +20,21 @@ import matplotlib.pyplot as plt
 
 from ms_nexus_tools.lib.utils import format_bytes
 from ms_nexus_tools.api.mass_range_args import MassCentreArgs, MassRangeArgs
-from ms_nexus_tools.lib.chunking import Chunker
+from ms_nexus_tools.lib.chunker import Chunker
 
 from ms_nexus_tools.lib.nxs import (
-    GenericAxis,
-    Axis,
+    NxAxes,
+    NxAxis,
     create_field,
     NexusFile,
     FieldOptions,
 )
-from ms_nexus_tools.lib.bounds import ContainedBounds, Chunk, Shape, Bounds
+from ms_nexus_tools.lib.bounds import Chunk, Shape, Bounds
 
 from datargs import InteractiveArgs, ConfigFileArgs, arg_field, ArgType
 from datargs.extra_types import DirPathType, FilePathType
 
-from .loader import load_opentims
+from .loader import LoadOpenTims
 
 
 class MZSpectraType(StrEnum):
@@ -145,7 +145,7 @@ def create_mass_axis(
             [ii * args.mass_bin_width + D.min_mz for ii in range(mass_count + 1)]
         )
         mass_values = mass_edges[:-1]
-        mass_axis = Axis.create(
+        mass_axis = NxAxis.create(
             name="mass",
             values=mass_values,
             indices=[4],
@@ -154,7 +154,7 @@ def create_mass_axis(
             f" Output has a mass range of {D.min_mz} - {D.max_mz}, with inflated with a bin width of {args.mass_bin_width}, giving {mass_count} mass binz."
         )
     else:
-        mass_axis = Axis.create_empty(
+        mass_axis = NxAxis.create_empty(
             name="mass",
             indices=[0, 1, 2, 3, 4],
             dtype=dtype,
@@ -174,7 +174,7 @@ def create_mass_axis(
 def read_axes(
     args, D
 ) -> tuple[
-    GenericAxis,
+    NxAxes,
     Shape,
     np.ndarray,
     np.ndarray,
@@ -219,31 +219,31 @@ def read_axes(
 
     shape = (1, *image_shape, mass_count)
 
-    axes = GenericAxis(
+    axes = NxAxes(
         [
             [
-                Axis.create(
+                NxAxis.create(
                     name="layer",
                     values=np.array([0]),
                     indices=[0],
                 )
             ],
             [
-                Axis.create(
+                NxAxis.create(
                     name="x",
                     values=x_values,
                     indices=[1],
                 )
             ],
             [
-                Axis.create(
+                NxAxis.create(
                     name="y",
                     values=y_values,
                     indices=[2],
                 )
             ],
             [
-                Axis.create(
+                NxAxis.create(
                     name="inv_ion_mobility",
                     values=iim_edges[1:],
                     indices=[3],
@@ -382,7 +382,7 @@ def write_to_nxs(
 
 def process(args: ProcessArgs, config: dict[str, Any]):
 
-    with load_opentims(args.in_path) as D:
+    with LoadOpenTims(args.in_path) as D:
         (
             axes,
             shape,
@@ -406,14 +406,16 @@ def process(args: ProcessArgs, config: dict[str, Any]):
             items_per_chunk=field_options.max_items_per_chunk,
         )
 
+        memory_buffer_multiplier = 3
+
         memory = Chunker.from_chunk_shape(
             data_shape=shape,
             chunk_shape=Shape(
                 [
                     chunker.chunk_shape[0],
-                    chunker.chunk_shape[1] * 4,
-                    chunker.chunk_shape[2] * 4,
-                    *chunker.chunk_shape[3:],
+                    chunker.chunk_shape[1],
+                    chunker.chunk_shape[2],
+                    *[c * memory_buffer_multiplier for c in chunker.chunk_shape[3:]],
                 ]
             ),
         )
@@ -488,7 +490,7 @@ def process(args: ProcessArgs, config: dict[str, Any]):
                     chunks=(1, *shape[1:3]),
                     shuffle=field_options.shuffle,
                 ),
-                axes=GenericAxis([axes[0], axes[1], axes[2]]),
+                axes=NxAxes([axes[0], axes[1], axes[2]]),
             )
 
             nxs.create_subentry(
@@ -501,9 +503,7 @@ def process(args: ProcessArgs, config: dict[str, Any]):
                     chunks=(1, shape[3]),
                     shuffle=field_options.shuffle,
                 ),
-                axes=GenericAxis(
-                    [axes[0], [axes[3][0].copy_with_incremented_indices(-2)]]
-                ),
+                axes=NxAxes([axes[0], [axes[3][0].copy_with_incremented_indices(-2)]]),
             )
 
             nxs.create_subentry(
@@ -516,11 +516,11 @@ def process(args: ProcessArgs, config: dict[str, Any]):
                     chunks=(1, len(meta.mz_edges[1:])),
                     shuffle=field_options.shuffle,
                 ),
-                axes=GenericAxis(
+                axes=NxAxes(
                     [
                         axes[0],
                         [
-                            Axis.create(
+                            NxAxis.create(
                                 name="mass",
                                 values=meta.mz_edges[1:],
                                 indices=[1],

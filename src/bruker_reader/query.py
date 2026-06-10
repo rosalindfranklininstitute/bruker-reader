@@ -1,3 +1,4 @@
+from queue import Empty, ShutDown, Queue
 import itertools
 import math
 import time
@@ -7,6 +8,7 @@ from pathlib import Path
 from dataclasses import dataclass, asdict
 import tracemalloc, linecache, os
 from tracemalloc import Statistic, StatisticDiff, Snapshot
+import concurrent.futures as cfutures
 
 from datargs.config_args import ConfigFileArgs
 from datargs.interactive_args import InteractiveArgs
@@ -14,9 +16,12 @@ from datargs.extra_types import FilePathType, DirPathType
 from datargs.args import arg_field
 
 from ms_nexus_tools.lib.utils import slice_range, format_bytes
-from ms_nexus_tools.lib.nxs import NexusFile
-from ms_nexus_tools.lib.chunking import Chunker
+from ms_nexus_tools.lib.nxs import NexusFile, NxAxes, NxAxis, create_field
+from ms_nexus_tools.lib.chunker import Chunker
 from ms_nexus_tools.lib.bounds import Chunk, Shape
+from ms_nexus_tools.lib.plotting import Plottable
+from ms_nexus_tools.lib.image import XYRectangle, plot_image as ms_plot_image
+from ms_nexus_tools.lib.spectrum import SpecSlice, plot_spectrum
 
 import hdf5plugin
 
@@ -120,27 +125,6 @@ class Titled:
 
 
 @dataclass
-class XYRectangle:
-    x_start: float
-    x_stop: float
-    y_start: float
-    y_stop: float
-
-    def x_slice(self, x_values: Float1D32) -> slice:
-        return _slice_from_axis(self.x_start, self.x_stop, x_values)
-
-    def y_slice(self, y_values: Float1D32) -> slice:
-        return _slice_from_axis(self.y_start, self.y_stop, y_values)
-
-    def get_plot_rect(self, **kwargs) -> Rectangle:
-        x = self.x_start
-        w = self.x_stop - x
-        y = self.y_start
-        h = self.y_stop - y
-        return Rectangle((x, y), w, h, **kwargs)
-
-
-@dataclass
 class MZSlice:
     mz_start: float
     mz_stop: float
@@ -152,6 +136,12 @@ class MZSlice:
         return np.nonzero((mz_values >= self.mz_start) & (mz_values < self.mz_stop))
 
 
+class MZSliceAlaise(SpecSlice):
+    def __init__(self, mz_slice: MZSlice):
+        self.start = mz_slice.mz_start
+        self.stop = mz_slice.mz_stop
+
+
 @dataclass
 class IIMSlice:
     iim_start: float
@@ -159,6 +149,12 @@ class IIMSlice:
 
     def iim_slice(self, iim_values: Float1D32) -> slice:
         return _slice_from_axis(self.iim_start, self.iim_stop, iim_values)
+
+
+class IIMSliceAlaise(SpecSlice):
+    def __init__(self, iim_slice: IIMSlice):
+        self.start = iim_slice.iim_start
+        self.stop = iim_slice.iim_stop
 
 
 class MzIIMSelect(Titled, MZSlice, IIMSlice):
@@ -260,6 +256,11 @@ class ProcessArgs(ConfigFileArgs, InteractiveArgs):
         default=None,
     )
 
+    dry_run: bool = arg_field(
+        action="store_true",
+        doc="If true the full dataset will not be read. Only the total images and the selectors will be plotted. Useful for checking that the ranges are correct.",
+    )
+
     mz_iim_selection: list[list[str]] = arg_field(
         "--mz-iim",
         doc="The Mz and 1/K0 values to sum into each pixel. This requires five values.",
@@ -316,16 +317,6 @@ class ProcessArgs(ConfigFileArgs, InteractiveArgs):
     )
 
 
-T = TypeVar("T")
-
-
-@dataclass
-class Plottable(Generic[T]):
-    title: str
-    color: str
-    value: T
-
-
 def plot_image(
     image,
     x_values,
@@ -339,43 +330,17 @@ def plot_image(
     fig, ax = plt.subplots()
     fig.suptitle(title)
     ax.set_title(sub_title)
-    im_min, im_max = np.percentile(image, [0, 100])
-    xx, yy = np.meshgrid(x_values, y_values, indexing="ij")
-    mnx = np.min(x_values)
-    mxx = np.max(x_values)
-    mny = np.min(y_values)
-    mxy = np.max(y_values)
-    dx = diff_selector(np.diff(x_values))
-    dy = diff_selector(np.diff(y_values))
-    img, xedges, yedges = np.histogram2d(
-        xx.ravel(),
-        yy.ravel(),
-        weights=image.ravel(),
-        bins=[
-            np.arange(mnx - dx / 2, mxx + dx / 2, dx),
-            (np.arange(mny - dy / 2, mxy + dy / 2, dy)),
-        ],
-    )
-    im = ax.imshow(
-        img.T,
+
+    im, (im_min, im_max) = ms_plot_image(
+        ax,
+        image=image,
+        x_values=x_values,
+        y_values=y_values,
+        xy_rectangles=xy_slices,
+        diff_selector=diff_selector,
         cmap="viridis",
-        extent=(mnx, mxx, mny, mxy),
         origin="lower",
     )
-    for jj, mz_xy_rect in enumerate(xy_slices):
-        rect = mz_xy_rect.value.get_plot_rect(
-            linewidth=2,
-            edgecolor=mz_xy_rect.color,
-            facecolor=mz_xy_rect.color,
-            alpha=0.3,
-        )
-        ax.add_patch(rect)
-        ax.text(
-            *rect.get_bbox().max,
-            mz_xy_rect.title,
-            color=mz_xy_rect.color,
-            fontsize=12,
-        )
     fig.colorbar(
         im,
         ax=ax,
@@ -398,30 +363,13 @@ def plot_iim(
     fig, ax = plt.subplots()
     fig.suptitle(title)
     ax.set_title(sub_title)
-    ax.plot(iim_values, counts)
 
-    for ii, iim_slice in enumerate(iim_slices):
-        x = iim_slice.value.iim_start
-        w = iim_slice.value.iim_stop - iim_slice.value.iim_start
-        rect = Rectangle(
-            (x, 0),
-            width=w,
-            height=1,
-            transform=ax.get_xaxis_transform(),
-            linewidth=2,
-            edgecolor=iim_slice.color,
-            facecolor=iim_slice.color,
-            alpha=0.3,
-        )
-        ax.add_patch(rect)
-        ax.text(
-            x,
-            1.01,
-            iim_slice.title,
-            transform=ax.get_xaxis_transform(),
-            fontsize=12,
-            color=iim_slice.color,
-        )
+    plot_spectrum(
+        ax,
+        counts,
+        iim_values,
+        [Plottable(p.title, p.color, IIMSliceAlaise(p.value)) for p in iim_slices],
+    )
 
     ax.set_xlabel("1/K0")
     ax.set_ylabel("Ion Count")
@@ -440,30 +388,13 @@ def plot_mz(
     fig, ax = plt.subplots()
     fig.suptitle(title)
     ax.set_title(sub_title)
-    ax.plot(mz_values, counts)
 
-    for ii, mz_slice in enumerate(mz_slices):
-        x = mz_slice.value.mz_start
-        w = mz_slice.value.mz_stop - mz_slice.value.mz_start
-        rect = Rectangle(
-            (x, 0),
-            width=w,
-            height=1,
-            transform=ax.get_xaxis_transform(),
-            linewidth=2,
-            edgecolor=mz_slice.color,
-            facecolor=mz_slice.color,
-            alpha=0.3,
-        )
-        ax.add_patch(rect)
-        ax.text(
-            x,
-            1.01,
-            mz_slice.title,
-            transform=ax.get_xaxis_transform(),
-            fontsize=12,
-            color=mz_slice.color,
-        )
+    plot_spectrum(
+        ax,
+        counts,
+        mz_values,
+        [Plottable(p.title, p.color, MZSliceAlaise(p.value)) for p in mz_slices],
+    )
 
     ax.set_xlabel("mz")
     ax.set_ylabel("Ion Count")
@@ -495,7 +426,17 @@ def calculate_memory_chunks(
     return memory
 
 
-def read_chunk(in_path: Path, chunk: Chunk):
+def read_chunk(
+    in_path: Path,
+    chunk: Chunk,
+    data_queue: Queue,
+    start: float = -1,
+    cutoff: float = -1,
+):
+    if start > 0 and cutoff > 0:
+        now = time.monotonic()
+        if (now - start) > cutoff:
+            return
     nxs = NexusFile(
         in_path,
         "r",
@@ -503,7 +444,151 @@ def read_chunk(in_path: Path, chunk: Chunk):
     chunk_mz = nxs.root.spectra.data.mass[*chunk].nxdata
     chunk_count = nxs.root.spectra.data.signal[*chunk].nxdata
     nxs._file.close()
-    return chunk_mz, chunk_count
+    data_queue.put((chunk, chunk_mz, chunk_count))
+
+
+@dataclass
+class Selections:
+    mz_xy_indices: dict[tuple[int, int], list[int]]
+    mz_xy: list[MzXYSelect]
+
+    mz_iim: list[MzIIMSelect]
+    mz_iim_slices: list[slice]
+
+    mz_iim_xy_indices: dict[tuple[int, int], list[int]]
+    mz_iim_xy_slices: list[slice]
+    mz_iim_xy: list[MzIIMXYSelect]
+
+
+@dataclass
+class Results:
+    xy_count: int
+    images: np.ndarray[tuple[int, int, int]]
+    iims: np.ndarray[tuple[int, int]]
+    totals: np.ndarray[tuple[int]]
+
+
+def process_chunk(
+    selections: Selections,
+    results: Results,
+    data_queue: Queue,
+    chunk_total: int,
+    xy_total: int,
+):
+    outer_tqdm = tqdm(desc="Processing", total=chunk_total)
+    inner_tqdm = tqdm(desc="XY", total=xy_total)
+    while True:
+        try:
+            file_chunk, chunk_mz, chunk_count = data_queue.get(timeout=30)
+        except Empty:
+            print("Empty")
+            continue
+        except ShutDown:
+            print("Shutdown")
+            return
+
+        total_xy = [
+            xy
+            for xy in itertools.product(
+                slice_range(file_chunk[1]), slice_range(file_chunk[2])
+            )
+        ]
+
+        for xy in total_xy:
+            results.xy_count += 1
+            x, y = xy
+            x_ii = x - file_chunk[1].start
+            y_ii = y - file_chunk[2].start
+            sel_mz = chunk_mz[0, x_ii, y_ii, :, :]
+            sel_count = chunk_count[0, x_ii, y_ii, :, :]
+
+            if xy in selections.mz_xy_indices:
+                for ii in selections.mz_xy_indices[xy]:
+                    mz_xy_sel = selections.mz_xy[ii]
+                    mz_mask = mz_xy_sel.mz_mask(sel_mz)
+                    count_masked = sel_count[mz_mask]
+                    try:
+                        results.iims[mz_mask[0], ii] += count_masked
+                    except Exception as e:
+                        ic("mz_xy", ii)
+                        ic((mz_xy_sel.mz_start, mz_xy_sel.mz_stop))
+                        ic(sel_mz.shape)
+                        ic(sel_count.shape)
+                        ic(mz_mask)
+                        ic(count_masked)
+                        ic(results.iims.shape)
+                        ic(e)
+                        raise
+
+            if xy in selections.mz_iim_xy_indices:
+                for ii in selections.mz_iim_xy_indices[xy]:
+                    mz_iim_xy_sel = selections.mz_iim_xy[ii]
+                    sub_sel_mz = sel_mz[selections.mz_iim_xy_slices[ii], :]
+                    sub_sel_count = sel_count[selections.mz_iim_xy_slices[ii], :]
+                    mz_mask = mz_iim_xy_sel.mz_mask(sub_sel_mz)
+                    results.totals[ii] += np.sum(sub_sel_count[mz_mask])
+
+            for ii, mz_iim_sel in enumerate(selections.mz_iim):
+                sub_sel_mz = sel_mz[selections.mz_iim_slices[ii], :]
+                sub_sel_count = sel_count[selections.mz_iim_slices[ii], :]
+                mz_mask = mz_iim_sel.mz_mask(sub_sel_mz)
+                results.images[x, y, ii] = np.sum(sub_sel_count[mz_mask])
+            inner_tqdm.update()
+        outer_tqdm.update()
+        data_queue.task_done()
+
+
+def plot_totals(
+    out_path: Path,
+    x_values,
+    y_values,
+    tic_image,
+    iim_values,
+    iim_spectrum,
+    mz_values,
+    mz_spectrum,
+    selections: Selections,
+):
+    color_cycle = itertools.cycle(mcolors.TABLEAU_COLORS)
+
+    mz_xy_plottables = [
+        Plottable(sel.title, next(color_cycle), sel) for sel in selections.mz_xy
+    ]
+    mz_iim_plottables = [
+        Plottable(sel.title, next(color_cycle), sel) for sel in selections.mz_iim
+    ]
+    mz_iim_xy_plottables = [
+        Plottable(sel.title, next(color_cycle), sel) for sel in selections.mz_iim_xy
+    ]
+
+    plot_image(
+        tic_image,
+        x_values,
+        y_values,
+        cast(list[Plottable[XYRectangle]], [*mz_xy_plottables, *mz_iim_xy_plottables]),
+        "Total Image",
+        "",
+        out_path,
+    )
+    plot_iim(
+        iim_values,
+        iim_spectrum,
+        cast(list[Plottable[IIMSlice]], [*mz_iim_plottables, *mz_iim_xy_plottables]),
+        "Total Iim",
+        "",
+        out_path,
+    )
+    plot_mz(
+        mz_values,
+        mz_spectrum,
+        cast(
+            list[Plottable[MZSlice]],
+            [*mz_iim_plottables, *mz_xy_plottables, *mz_iim_xy_plottables],
+        ),
+        "Total Mz",
+        "",
+        out_path,
+    )
 
 
 def process(args: ProcessArgs, config: dict[str, Any] = {}):
@@ -511,22 +596,23 @@ def process(args: ProcessArgs, config: dict[str, Any] = {}):
 
     assert args.in_path.exists(), f"The input file {args.in_path} was not found"
     args.out_path.mkdir(parents=True, exist_ok=True)
+    selections = Selections({}, [], [], [], {}, [], [])
 
-    mz_iim_selections = [
+    selections.mz_iim = [
         MzIIMSelect(v[0], *[float(vi) for vi in v[1:]]) for v in args.mz_iim_selection
     ]
-    mz_iim_selections.extend(MzIIMSelect.read_csv(args.mz_iim_csv))
+    selections.mz_iim.extend(MzIIMSelect.read_csv(args.mz_iim_csv))
 
-    mz_xy_selections = [
+    selections.mz_xy = [
         MzXYSelect(v[0], *[float(vi) for vi in v[1:]]) for v in args.mz_xy_selection
     ]
-    mz_xy_selections.extend(MzXYSelect.read_csv(args.mz_xy_csv))
+    selections.mz_xy.extend(MzXYSelect.read_csv(args.mz_xy_csv))
 
-    mz_iim_xy_selections = [
+    selections.mz_iim_xy = [
         MzIIMXYSelect(v[0], *[float(vi) for vi in v[1:]])
         for v in args.mz_iim_xy_selection
     ]
-    mz_iim_xy_selections.extend(MzIIMXYSelect.read_csv(args.mz_iim_xy_csv))
+    selections.mz_iim_xy.extend(MzIIMXYSelect.read_csv(args.mz_iim_xy_csv))
 
     push_snapshot()
 
@@ -553,39 +639,40 @@ def process(args: ProcessArgs, config: dict[str, Any] = {}):
         nx = len(x_values)
         ny = len(y_values)
 
-        mz_iim_slices: list[slice] = []
-        for sel in mz_iim_selections:
-            mz_iim_slices.append(sel.iim_slice(iim_values))
+        for sel in selections.mz_iim:
+            selections.mz_iim_slices.append(sel.iim_slice(iim_values))
 
-        mz_xy_indices: dict[tuple[int, int], list[int]] = {}
-        for ii, sel in enumerate(mz_xy_selections):
+        for ii, sel in enumerate(selections.mz_xy):
             for xy in itertools.product(
                 slice_range(sel.x_slice(x_values)), slice_range(sel.y_slice(y_values))
             ):
-                if xy not in mz_xy_indices:
-                    mz_xy_indices[xy] = []
-                mz_xy_indices[xy].append(ii)
+                if xy not in selections.mz_xy_indices:
+                    selections.mz_xy_indices[xy] = []
+                selections.mz_xy_indices[xy].append(ii)
 
-        mz_iim_xy_slices: list[slice] = [
-            sel.iim_slice(iim_values) for sel in mz_iim_xy_selections
+        selections.mz_iim_xy_slices = [
+            sel.iim_slice(iim_values) for sel in selections.mz_iim_xy
         ]
 
-        mz_iim_xy_indices: dict[tuple[int, int], list[int]] = {}
-        for ii, sel in enumerate(mz_iim_xy_selections):
+        for ii, sel in enumerate(selections.mz_iim_xy):
             for xy in itertools.product(
                 slice_range(sel.x_slice(x_values)), slice_range(sel.y_slice(y_values))
             ):
-                if xy not in mz_iim_xy_indices:
-                    mz_iim_xy_indices[xy] = []
-                mz_iim_xy_indices[xy].append(ii)
+                if xy not in selections.mz_iim_xy_indices:
+                    selections.mz_iim_xy_indices[xy] = []
+                selections.mz_iim_xy_indices[xy].append(ii)
 
-        images = np.zeros((nx, ny, len(mz_iim_selections)))
-        iims = np.zeros((len(iim_values), len(mz_iim_selections)))
-        totals = np.zeros((len(mz_iim_xy_selections)))
+        results = Results(
+            xy_count=0,
+            images=np.zeros((nx, ny, len(selections.mz_iim))),
+            iims=np.zeros((len(iim_values), len(selections.mz_xy))),
+            totals=np.zeros((len(selections.mz_iim_xy))),
+        )
 
         data_shape = nxs.root.spectra.data.signal.shape
         data_chunk_shape = nxs.root.spectra.data.signal.chunks
-        max_memory = 1024 * 1024 * 1024 * 2
+        max_memory = 1024 * 1024 * 1024
+        n_producers = 2
 
         memory = calculate_memory_chunks(data_shape, data_chunk_shape, max_memory)
 
@@ -602,85 +689,73 @@ def process(args: ProcessArgs, config: dict[str, Any] = {}):
         )
     push_snapshot()
 
-    memory_chunks = [c for c in memory.chunks()]
-    start = time.monotonic()
-    xy_count = 0
-    xy_total_count = np.prod(data_shape[:3])
-    chunk_mz = np.zeros(memory.chunk_shape)
-    chunk_count = np.zeros(memory.chunk_shape)
-    for file_chunk in tqdm(memory_chunks, smoothing=0.01):
-        push_snapshot()
-        chunk_mz, chunk_count = read_chunk(args.in_path, file_chunk)
-        # if time.monotonic() - start > 60:
-        #     break
-
-        total_xy = [
-            xy
-            for xy in itertools.product(
-                slice_range(file_chunk[1]), slice_range(file_chunk[2])
-            )
-        ]
-
-        for xy in total_xy:
-            xy_count += 1
-            x, y = xy
-            x_ii = x - file_chunk[1].start
-            y_ii = y - file_chunk[2].start
-            sel_mz = chunk_mz[0, x_ii, y_ii, :, :]
-            sel_count = chunk_count[0, x_ii, y_ii, :, :]
-
-            if xy in mz_xy_indices:
-                for pix, (mz, count) in enumerate(zip(sel_mz, sel_count)):
-                    for ii in mz_xy_indices[xy]:
-                        mz_xy_sel = mz_xy_selections[ii]
-                        mz_slice = mz_xy_sel.mz_slice(mz)
-                        iims[pix, ii] += np.sum(count[mz_slice])
-
-            if xy in mz_iim_xy_indices:
-                for ii in mz_iim_xy_indices[xy]:
-                    mz_iim_xy_sel = mz_iim_xy_selections[ii]
-                    sub_sel_mz = sel_mz[mz_iim_xy_slices[ii], :]
-                    sub_sel_count = sel_count[mz_iim_xy_slices[ii], :]
-                    mz_mask = mz_iim_xy_sel.mz_mask(sub_sel_mz)
-                    totals[ii] += np.sum(sub_sel_count[mz_mask])
-
-            for ii, mz_iim_sel in enumerate(mz_iim_selections):
-                sub_sel_mz = sel_mz[mz_iim_slices[ii], :]
-                sub_sel_count = sel_count[mz_iim_slices[ii], :]
-                mz_mask = mz_iim_sel.mz_mask(sub_sel_mz)
-                images[x, y, ii] = np.sum(sub_sel_count[mz_mask])
-        push_snapshot()
-    stop = time.monotonic()
-    print(
-        f"Processed {xy_count} of {xy_total_count} ({xy_count * 100 / xy_total_count:.1f}%) pixels"
-    )
-    print(f" in {stop - start:.2f} seconds.")
-    print(f" Giving {xy_count / (stop - start):.1f} pixels per second.")
-
-    color_cycle = itertools.cycle(mcolors.TABLEAU_COLORS)
-
-    mz_xy_plottables = [
-        Plottable(sel.title, next(color_cycle), sel) for sel in mz_xy_selections
-    ]
-    mz_iim_plottables = [
-        Plottable(sel.title, next(color_cycle), sel) for sel in mz_iim_selections
-    ]
-    mz_iim_xy_plottables = [
-        Plottable(sel.title, next(color_cycle), sel) for sel in mz_iim_xy_selections
-    ]
-
-    plot_image(
-        tic_image,
+    plot_totals(
+        args.out_path,
         x_values,
         y_values,
-        cast(list[Plottable[XYRectangle]], [*mz_xy_plottables, *mz_iim_xy_plottables]),
-        "Total Image",
-        "",
-        args.out_path,
+        tic_image,
+        iim_values,
+        iim_spectrum,
+        mz_values,
+        mz_spectrum,
+        selections,
     )
-    for ii, mz_iim_sel in enumerate(mz_iim_selections):
+
+    if args.dry_run:
+        return
+
+    data_queue = Queue(maxsize=n_producers)
+
+    start = time.monotonic()
+
+    chunks = [c for c in memory.chunks()]
+    xy_total_count = np.prod(data_shape[:3])
+    with cfutures.ThreadPoolExecutor(max_workers=n_producers + 1) as executor:
+        processor_future = executor.submit(
+            process_chunk, selections, results, data_queue, len(chunks), xy_total_count
+        )
+
+        reader_futures = [
+            executor.submit(read_chunk, args.in_path, c, data_queue, start, -1)
+            for c in chunks
+        ]
+
+        for f in tqdm(
+            cfutures.as_completed(reader_futures),
+            total=len(reader_futures),
+            desc="  Chunks ",
+            leave=False,
+        ):
+            f.result()
+
+        data_queue.join()
+        data_queue.shutdown()
+
+        cfutures.wait([processor_future])
+        processor_future.result()
+
+    stop = time.monotonic()
+    print(
+        f"Processed {results.xy_count} of {xy_total_count} ({results.xy_count * 100 / xy_total_count:.1f}%) pixels"
+    )
+    print(f" in {stop - start:.2f} seconds.")
+    print(f" Giving {results.xy_count / (stop - start):.1f} pixels per second.")
+
+    out_nxs = NexusFile(args.out_path / "outputs.nxs", "w")
+    out_nxs.create_subentry(
+        "TotalImage",
+        create_field(value=tic_image),
+        NxAxes(
+            [
+                [NxAxis.create(name="x", values=x_values, indices=[0])],
+                [NxAxis.create(name="y", values=y_values, indices=[1])],
+            ]
+        ),
+    )
+
+    for ii, mz_iim_sel in enumerate(selections.mz_iim):
         plot_image(
-            images[:, :, ii],
+            results.images[:, :, ii],
             x_values,
             y_values,
             [],
@@ -688,37 +763,71 @@ def process(args: ProcessArgs, config: dict[str, Any] = {}):
             mz_iim_sel.to_title(),
             args.out_path,
         )
+        out_nxs.create_subentry(
+            f"Image - {mz_iim_sel.title}",
+            create_field(value=results.images[:, :, ii]),
+            NxAxes(
+                [
+                    [NxAxis.create(name="x", values=x_values, indices=[0])],
+                    [NxAxis.create(name="y", values=y_values, indices=[1])],
+                ]
+            ),
+        )
 
-    plot_iim(
-        iim_values,
-        iim_spectrum,
-        cast(list[Plottable[IIMSlice]], [*mz_iim_plottables, *mz_iim_xy_plottables]),
-        "Total Iim",
-        "",
-        args.out_path,
+    out_nxs.create_subentry(
+        "InverseIonMobility",
+        create_field(value=iim_spectrum),
+        NxAxes(
+            [
+                [NxAxis.create(name="iim", values=iim_values, indices=[0])],
+            ]
+        ),
     )
 
-    for ii, mz_xy_sel in enumerate(mz_xy_selections):
+    for ii, mz_xy_sel in enumerate(selections.mz_xy):
         plot_iim(
             iim_values,
-            iims[:, ii],
+            results.iims[:, ii],
             [],
             mz_xy_sel.title,
             mz_xy_sel.to_title(),
             args.out_path,
         )
+        out_nxs.create_subentry(
+            f"IIM - {mz_xy_sel.title}",
+            create_field(value=results.iims[:, ii]),
+            NxAxes(
+                [
+                    [NxAxis.create(name="iim", values=iim_values, indices=[0])],
+                ]
+            ),
+        )
 
-    plot_mz(
-        mz_values,
-        mz_spectrum,
-        cast(
-            list[Plottable[MZSlice]],
-            [*mz_iim_plottables, *mz_xy_plottables, *mz_iim_xy_plottables],
+    out_nxs.create_subentry(
+        "Mz",
+        create_field(value=mz_spectrum),
+        NxAxes(
+            [
+                [NxAxis.create(name="mz", values=mz_values, indices=[0])],
+            ]
         ),
-        "Total Mz",
-        "",
-        args.out_path,
     )
 
-    for ii, mz_iim_xy_sel in enumerate(mz_iim_xy_selections):
-        print(f"{ii}: {mz_iim_xy_sel.title}: {totals[ii]}")
+    out_nxs.create_subentry(
+        "Totals",
+        create_field(value=[results.totals]),
+        NxAxes(
+            [
+                [
+                    NxAxis.create(
+                        name="slice",
+                        values=[[sel.title for sel in selections.mz_iim_xy]],
+                        indices=[1],
+                    )
+                ],
+            ]
+        ),
+    )
+
+    for ii, mz_iim_xy_sel in enumerate(selections.mz_iim_xy):
+        print(f"{ii}: {mz_iim_xy_sel.title}: {results.totals[ii]}")
