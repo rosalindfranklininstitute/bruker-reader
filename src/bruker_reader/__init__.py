@@ -1,3 +1,4 @@
+from bruker_reader.utils import SparseAxisSampling
 from pathlib import Path
 import os
 import sys
@@ -39,7 +40,12 @@ def tof() -> None:
     process_args = data_convert.ProcessArgs.parse_interactive(
         "tof", args=partial_args.remaining_args, exclude=["config"]
     )
-    process_args.data_source = TsfDataSource(process_args.in_path)
+    sampling = SparseAxisSampling(
+        bin_width=10,
+        area_positions=np.array([50, 75, 100]),
+        area_volumes=np.array([75, 20, 5]),
+    )
+    process_args.data_source = TsfDataSource(process_args.in_path, sampling=sampling)
     data_convert.process(process_args, partial_args.config)
 
 

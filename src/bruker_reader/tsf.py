@@ -3,6 +3,7 @@ from typing import Callable, Any
 from pathlib import Path
 
 import numpy as np
+import numpy.typing as npt
 import sparse
 from icecream import ic
 
@@ -48,7 +49,8 @@ class TsfDataSource(AbstractDataSource):
         min_mz = self.tof_data.GlobalMetadata["MzAcqRangeLower"]
         max_mz = self.tof_data.GlobalMetadata["MzAcqRangeUpper"]
         mass_count = (
-            self.tof_data.GlobalMetadata["DigitizerNumSamples"] // sampling.bin_width
+            self.tof_data.GlobalMetadata["DigitizerNumSamples"]
+            // sampling.downsample_count
         )
         ranges = self.tof_data.analysis.range("Frames", ["NumPeaks", "Id"])
         self.min_peaks, self.max_peaks = ranges[0]
@@ -140,11 +142,11 @@ class TsfDataSource(AbstractDataSource):
 
         return DataShape(shape=self.total_shape, density=density)
 
-    def signal_type(self) -> np.generic:
+    def signal_type(self) -> npt.DTypeLike:
         return np.int64
 
     def output_chunks(self) -> dict[str, Shape]:
-        return dict(images=(1, 1, 1), spectra=(2, 2, 1))
+        return dict(images=(1, 1, 2), spectra=(2, 2, 1))
 
     def chunk_read_count(self, memory_chunk: Shape) -> int:
         return memory_chunk[0] * memory_chunk[1]

@@ -39,7 +39,7 @@ class MaldiAxis:
 
 @dataclass
 class SparseAxisSampling:
-    bin_width: int = 10
+    downsample_count: int = 10
     area_positions: Float1D32 = field(default_factory=lambda: np.array([15, 75, 100]))
     area_volumes: Float1D32 = field(default_factory=lambda: np.array([5, 90, 5]))
 
@@ -48,3 +48,5 @@ class SparseAxisSampling:
             raise ValueError(
                 "area_positions and area_volumes should have the same shape."
             )
+        if mx := np.max(self.area_positions) != 100:
+            raise ValueError(f"area_positions should end at 100%, but found {mx:.2f}%")
