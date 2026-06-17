@@ -42,10 +42,6 @@ class TsfDataSource(AbstractDataSource):
             bruker_d_folder_name=str(tsf_file.parent), tdf_sdk=self.dll
         )
 
-        max_x = self.tof_data.GlobalMetadata["ImagingAreaMaxXIndexPos"]
-        min_y = self.tof_data.GlobalMetadata["ImagingAreaMinYIndexPos"]
-        max_y = self.tof_data.GlobalMetadata["ImagingAreaMaxYIndexPos"]
-
         min_mz = self.tof_data.GlobalMetadata["MzAcqRangeLower"]
         max_mz = self.tof_data.GlobalMetadata["MzAcqRangeUpper"]
         mass_count = (

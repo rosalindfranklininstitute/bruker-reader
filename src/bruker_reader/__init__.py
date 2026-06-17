@@ -41,7 +41,21 @@ def tof() -> None:
         "tof", args=partial_args.remaining_args, exclude=["config"]
     )
     sampling = SparseAxisSampling(
-        bin_width=10,
+        downsample_count=10,
+        area_positions=np.array([50, 75, 100]),
+        area_volumes=np.array([75, 20, 5]),
+    )
+    process_args.data_source = TsfDataSource(process_args.in_path, sampling=sampling)
+    data_convert.process(process_args, partial_args.config)
+
+
+def tims_tof() -> None:
+    partial_args = data_convert.ProcessArgs.parse_config("tims_tof")
+    process_args = data_convert.ProcessArgs.parse_interactive(
+        "tims_tof", args=partial_args.remaining_args, exclude=["config"]
+    )
+    sampling = SparseAxisSampling(
+        downsample_count=10,
         area_positions=np.array([50, 75, 100]),
         area_volumes=np.array([75, 20, 5]),
     )
