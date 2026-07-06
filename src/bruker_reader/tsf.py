@@ -25,14 +25,13 @@ from ms_nexus_tools.lib.data_source import (
     MultiCOO,
 )
 from ms_nexus_tools.lib.dtypes import Int3D32, Int1D32, Float1D32
+from ms_nexus_tools.lib.sparse_sampling import SparseSampling
 
-from bruker_reader.utils import SparseAxisSampling, MaldiAxis
+from bruker_reader.utils import MaldiAxis
 
 
 class TsfDataSource(AbstractDataSource):
-    def __init__(
-        self, tsf_file: Path, sampling: SparseAxisSampling = SparseAxisSampling()
-    ):
+    def __init__(self, tsf_file: Path, sampling: SparseSampling = SparseSampling()):
         if tsf_file.suffix != ".tsf":
             raise ValueError(
                 f"Expected the path to an analysis.tsf file, but recived '{tsf_file}'"
@@ -44,33 +43,14 @@ class TsfDataSource(AbstractDataSource):
 
         min_mz = self.tof_data.GlobalMetadata["MzAcqRangeLower"]
         max_mz = self.tof_data.GlobalMetadata["MzAcqRangeUpper"]
-        mass_count = (
-            self.tof_data.GlobalMetadata["DigitizerNumSamples"]
-            // sampling.downsample_count
-        )
+        mass_count = self.tof_data.GlobalMetadata["DigitizerNumSamples"]
         ranges = self.tof_data.analysis.range("Frames", ["NumPeaks", "Id"])
         self.min_peaks, self.max_peaks = ranges[0]
         self.frame_count = np.diff(ranges[1])[0]
 
         self.max_data_count = self.max_peaks * self.frame_count
 
-        ends = np.concatenate(
-            [[min_mz], (max_mz - min_mz) * sampling.area_positions / 100.0 + min_mz]
-        )
-        self.mz_edges = np.concatenate(
-            [
-                *[
-                    np.linspace(
-                        ends[ii],
-                        ends[ii + 1],
-                        num=int(mass_count * sampling.area_volumes[ii] / 100.0),
-                        endpoint=False,
-                    )
-                    for ii in range(len(sampling.area_positions))
-                ],
-                [max_mz],
-            ]
-        )
+        self.mz_edges = sampling.get_edges(min_mz, max_mz, mass_count)
 
         self.frame_info = self.tof_data.analysis.join_frame("MaldiFrameInfo")
         self.maldi_axis = MaldiAxis(self.frame_info)

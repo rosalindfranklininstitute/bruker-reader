@@ -35,18 +35,3 @@ class MaldiAxis:
             ii_y = self.frame_y_to_axis[y]
             assert self.frame_inx[ii_x, ii_y] == -1
             self.frame_inx[ii_x, ii_y] = ii
-
-
-@dataclass
-class SparseAxisSampling:
-    downsample_count: int = 10
-    area_positions: Float1D32 = field(default_factory=lambda: np.array([15, 75, 100]))
-    area_volumes: Float1D32 = field(default_factory=lambda: np.array([5, 90, 5]))
-
-    def __post_init__(self):
-        if self.area_positions.shape != self.area_volumes.shape:
-            raise ValueError(
-                "area_positions and area_volumes should have the same shape."
-            )
-        if mx := np.max(self.area_positions) != 100:
-            raise ValueError(f"area_positions should end at 100%, but found {mx:.2f}%")

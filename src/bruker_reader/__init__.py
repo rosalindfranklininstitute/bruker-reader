@@ -1,4 +1,4 @@
-from bruker_reader.utils import SparseAxisSampling
+from ms_nexus_tools.lib.sparse_sampling import SparseSampling
 from pathlib import Path
 import os
 import sys
@@ -40,7 +40,7 @@ def tof() -> None:
     process_args = data_convert.ProcessArgs.parse_interactive(
         "tof", args=partial_args.remaining_args, exclude=["config"]
     )
-    sampling = SparseAxisSampling(
+    sampling = SparseSampling(
         downsample_count=10,
         area_positions=np.array([50, 75, 100]),
         area_volumes=np.array([75, 20, 5]),
