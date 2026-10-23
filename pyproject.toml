@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Duncan McDougall <duncan.mcdougall@rfi.ac.uk>
+#
+# SPDX-License-Identifier: Apache-2.0
+
 [project]
 name = "bruker-reader"
 version = "0.1.0"
@@ -55,3 +59,27 @@ verbose = false
 skip-zero = true
 prof-mod = ['./src/bruker_reader/', 'bruker_reader', '../xartus/src/xartus/', 'xartus', './tmp.py']
 prof-imports = false
+
+[tool.bumpversion]
+current_version = "0.3.1"
+parse = "(?P<major>\\d+)\\.(?P<minor>\\d+)\\.(?P<patch>\\d+)"
+serialize = ["{major}.{minor}.{patch}"]
+search = "{current_version}"
+replace = "{new_version}"
+regex = false
+ignore_missing_version = false
+ignore_missing_files = false
+tag = true
+push_tag = false
+sign_tags = false
+tag_name = "v{new_version}"
+tag_message = "Bump version: {current_version} -> {new_version}"
+allow_dirty = false
+commit = true
+message = "Bump version to {new_version}: {distance_to_latest_tag} commits since {current_version}"
+moveable_tags = []
+commit_args = ''
+setup_hooks = []
+pre_commit_hooks = []
+post_commit_hooks = []
+allow_shell_hooks = false
