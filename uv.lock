@@ -69,8 +69,6 @@ dependencies = [
     { name = "argsui", extra = ["gui"] },
     { name = "hdf5plugin" },
     { name = "icecream" },
-    { name = "opentims-bruker-bridge" },
-    { name = "opentimspy" },
     { name = "pytdfsdk" },
     { name = "sparse" },
     { name = "tqdm" },
@@ -96,8 +94,6 @@ requires-dist = [
     { name = "argsui", extras = ["gui"], specifier = ">=0.3.6" },
     { name = "hdf5plugin", specifier = ">=6.0.0" },
     { name = "icecream", specifier = ">=2.2.0" },
-    { name = "opentims-bruker-bridge", specifier = ">=1.2.0" },
-    { name = "opentimspy", specifier = ">=1.1.0" },
     { name = "pytdfsdk", editable = "../pyTDFSDK" },
     { name = "sparse", specifier = ">=0.18.0" },
     { name = "tqdm", specifier = ">=4.67.3" },
@@ -722,39 +718,6 @@ wheels = [
 ]
 
 [[package]]
-name = "opentims-bruker-bridge"
-version = "1.2.0"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/ad/b5/8c0ecc9aeb5c6fd763c180a990b1acf428884b06a2cab9119f77e00e971d/opentims_bruker_bridge-1.2.0.tar.gz", hash = "sha256:e8349dfa4451c87cdff6aca642066c501c0e62b2c2bedba666e6c4935b215f5a", size = 6836972, upload-time = "2026-02-25T09:52:42.623Z" }
-
-[[package]]
-name = "opentimspy"
-version = "1.1.0"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "numpy" },
-    { name = "pybind11" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/46/62/a9b9b07d5c79c1df9544ec6df152e0be058d9ae835dae253b40e446562b5/opentimspy-1.1.0.tar.gz", hash = "sha256:e9e24c3b02fe0ca336032e561acdb638973d3287350751933b2ca4f2beaf5d51", size = 5430514, upload-time = "2026-03-23T11:19:47.117Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/84/a8/7f4d355297fd98b466cc7a98dcfb7989ba46480ed1e3d7e1c7eaa7ac877e/opentimspy-1.1.0-cp313-cp313-macosx_11_0_arm64.whl", hash = "sha256:abaee9b78053ae68cfc4dd8dbf5144e2042063808923af8c05612a0d37410a58", size = 417585, upload-time = "2026-03-23T11:19:07.564Z" },
-    { url = "https://files.pythonhosted.org/packages/a7/2c/ec3586f233ed16051b3fb62289d3b039af6b087f79028a043b22648320d3/opentimspy-1.1.0-cp313-cp313-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:f79b4b38c5e61a93b73245e2fe6d544c2dd7f23202d5c4f970d39590224e43ae", size = 495336, upload-time = "2026-03-23T11:19:09.239Z" },
-    { url = "https://files.pythonhosted.org/packages/53/64/fe200ee85bd8382ef0b4c590956329c834736bf53336c09661978d6bb04c/opentimspy-1.1.0-cp313-cp313-musllinux_1_2_x86_64.whl", hash = "sha256:9fe75082551bfcba7e4e596a63015b468c7224d197df7be1bf8b449b474e43c3", size = 1533372, upload-time = "2026-03-23T11:19:11.045Z" },
-    { url = "https://files.pythonhosted.org/packages/e7/13/bd81ca6cc6a1e0fcbfe90b89c8c21befc80f61ca088cda203b6ff9acc367/opentimspy-1.1.0-cp313-cp313-win32.whl", hash = "sha256:4c7070ef43d1fe029b54570d2cad4c7cffa66f94cccaa0f2faaa00c8d305cb0e", size = 386592, upload-time = "2026-03-23T11:19:12.45Z" },
-    { url = "https://files.pythonhosted.org/packages/27/37/c99f04ceabf41da47c186479166215b8049a8ab1f800c824dcc9415cf956/opentimspy-1.1.0-cp313-cp313-win_amd64.whl", hash = "sha256:1f951c509d24acb373a15c3b7900b50e9780f2ec4dc08d4380bafb03d2ba5418", size = 406656, upload-time = "2026-03-23T11:19:14.096Z" },
-    { url = "https://files.pythonhosted.org/packages/a2/ac/b0419504d121b29916a4db7e9eda711029ede9c7834b30d50dffe1f6dc7a/opentimspy-1.1.0-cp314-cp314-macosx_11_0_arm64.whl", hash = "sha256:c06a42b099972b07e9ea7051424d97a669d3672ee454e5ccbd6ec376a07f02bf", size = 418249, upload-time = "2026-03-23T11:19:15.785Z" },
-    { url = "https://files.pythonhosted.org/packages/67/91/caa8b80f74a93ca0110b691c731d6147c1d1f137165c0eb426ae80f3615b/opentimspy-1.1.0-cp314-cp314-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:afbb3e61be2242fb203a5b27a5ee719cfe7ee13f28ea6b0f518034fea1a2f2ae", size = 495537, upload-time = "2026-03-23T11:19:17.36Z" },
-    { url = "https://files.pythonhosted.org/packages/e8/b5/5f89b2564d2d1875e3c0563b89d5a25876eee25c53ab22d8c9ca5e0672bd/opentimspy-1.1.0-cp314-cp314-musllinux_1_2_x86_64.whl", hash = "sha256:dde80477c8d9961520821c3df6f123ec2985e82d0373c6a5195ba47420787520", size = 1533773, upload-time = "2026-03-23T11:19:18.701Z" },
-    { url = "https://files.pythonhosted.org/packages/fc/2e/79cc685615be1ccd5eeb9fc485901dc7caf78b6362b748a1f41eb74743af/opentimspy-1.1.0-cp314-cp314-win32.whl", hash = "sha256:4d33a47264781042972dad236534c2b46aa1e0c2a71c5e7acada532f41d53574", size = 391248, upload-time = "2026-03-23T11:19:20.082Z" },
-    { url = "https://files.pythonhosted.org/packages/c4/ce/d5363ccfe2db9c29ea5b471ba473557f44c9dc4675dd2241367ec65652f2/opentimspy-1.1.0-cp314-cp314-win_amd64.whl", hash = "sha256:2f575b95d18d34b38d1372926b10b5f265be213e158152dc50a60d6b6110aacb", size = 411898, upload-time = "2026-03-23T11:19:21.318Z" },
-    { url = "https://files.pythonhosted.org/packages/43/de/e8beda323d38223703f03090b221161f965356ae629b394a5e8d0efa37b6/opentimspy-1.1.0-cp314-cp314t-macosx_11_0_arm64.whl", hash = "sha256:e0604ed0ba893ff824e66c5c424c2f3350e70a888be9e391617dc9f31ae168d9", size = 427652, upload-time = "2026-03-23T11:19:22.64Z" },
-    { url = "https://files.pythonhosted.org/packages/ed/7e/4a00a44ced13edc9e48a534ce74b03485bad03deb9922f21e3f80c7be5b0/opentimspy-1.1.0-cp314-cp314t-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:4163f35809d5104007c20278bc4d2584267f620f08e6dd1522cb8245b0cdf03c", size = 494781, upload-time = "2026-03-23T11:19:24.314Z" },
-    { url = "https://files.pythonhosted.org/packages/59/6a/19fda1762a70c04beb89b323894e0fdb60ea8f900c35b9d872bffc92c5db/opentimspy-1.1.0-cp314-cp314t-musllinux_1_2_x86_64.whl", hash = "sha256:adb8a6b3c6b9d85746263388f37db8c9b435ea42811f2215c5a23c9ffbc8c351", size = 1533187, upload-time = "2026-03-23T11:19:25.978Z" },
-    { url = "https://files.pythonhosted.org/packages/f7/d3/7ff3adaf70ef9a588c928bd74648f3b2425eea9a5ffe6d3e14e8aac1e266/opentimspy-1.1.0-cp314-cp314t-win32.whl", hash = "sha256:82b8d8575aa681b2db95994aca21ad48730dcca67b3a8729dcd9b404c6c920d7", size = 400843, upload-time = "2026-03-23T11:19:27.683Z" },
-    { url = "https://files.pythonhosted.org/packages/72/a4/b1f72e246960d3a98b0863c5d944c28fedaac0703034a51dc6dc40d28f84/opentimspy-1.1.0-cp314-cp314t-win_amd64.whl", hash = "sha256:2b1f4bec9cd2e6798c960a2b048cdf4ebd87483fbca71afe5f69b909925aa8d7", size = 426287, upload-time = "2026-03-23T11:19:28.944Z" },
-]
-
-[[package]]
 name = "packaging"
 version = "26.3"
 source = { registry = "https://pypi.org/simple" }
@@ -967,15 +930,6 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/72/13/66e1402dcc860e1dc2760b1e0292c9a569b62b3bccab69def1b3e907d006/pyarrow-25.0.1-cp314-cp314t-musllinux_1_2_aarch64.whl", hash = "sha256:169d3429d5be7c752125890620f75a60776d38b0035eddae939651640822332e", size = 50040226, upload-time = "2026-08-10T12:40:35.186Z" },
     { url = "https://files.pythonhosted.org/packages/78/10/3f1a5497a7ef732ab0f03ecca3e66d89d9c0f57fdc61b4794c456b781f01/pyarrow-25.0.1-cp314-cp314t-musllinux_1_2_x86_64.whl", hash = "sha256:119297a6dc197e45d9c6d4415f7814a67ffa36c180d26f68c154c58067ae782d", size = 53149035, upload-time = "2026-08-10T12:40:41.454Z" },
     { url = "https://files.pythonhosted.org/packages/93/c0/37d4a7e8e2f7a6076283673d5298018ca26478b934c6ee369e10505ab32c/pyarrow-25.0.1-cp314-cp314t-win_amd64.whl", hash = "sha256:4288f27577352d608ca08553b0865e4a9b3aa14820c5d95b53337218d609835b", size = 28753071, upload-time = "2026-08-10T12:40:46.623Z" },
-]
-
-[[package]]
-name = "pybind11"
-version = "3.0.3"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/41/50/b83d65efc1914681f5aded4ce37c703408a9bb74829f27f041560ca52ffb/pybind11-3.0.3.tar.gz", hash = "sha256:00471cdb816882c484708bc5dde80815c8c11cea540ab2cc6410f5ddea434755", size = 587814, upload-time = "2026-03-31T23:42:06.481Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/ab/87/99f21e9b20899d6dc1bf7544cfe53e5fa17acc21bb267971a540425357d3/pybind11-3.0.3-py3-none-any.whl", hash = "sha256:fb5f8e4a64946b4dcc0451c83a8c384f803bc0a62dd1ba02f199e97dbc9aad4c", size = 313717, upload-time = "2026-03-31T23:42:04.814Z" },
 ]
 
 [[package]]

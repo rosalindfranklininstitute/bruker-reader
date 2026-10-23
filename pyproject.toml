@@ -10,8 +10,6 @@ requires-python = ">=3.13"
 dependencies = [
     "hdf5plugin>=6.0.0",
     "icecream>=2.2.0",
-    "opentims-bruker-bridge>=1.2.0",
-    "opentimspy>=1.1.0",
     "pytdfsdk",
     "sparse>=0.18.0",
     "tqdm>=4.67.3",
@@ -47,6 +45,9 @@ build-backend = "uv_build"
 [tool.uv.sources]
 xartus = { path = "../Xartus", editable = true }
 pytdfsdk = { path = "../pyTDFSDK", editable = true }
+
+[tool.ruff.lint]
+ignore=['RUF009']
 
 [tool.line_profiler.kernprof]
 line-by-line = true

@@ -1,35 +1,27 @@
-import logging
 import itertools
-from typing import Callable, Any
+import logging
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 import numpy as np
-import numpy.typing as npt
-import sparse
-from icecream import ic
-
-
+from pyTDFSDK.classes import TsfData
 from pyTDFSDK.init_tdf_sdk import init_tdf_sdk_api
-from pyTDFSDK.classes import TsfData, TdfData
 from pyTDFSDK.tsf import (
-    tsf_read_line_spectrum_v2,
     tsf_index_to_mz,
-    tsf_mz_to_index,
+    tsf_read_line_spectrum_v2,
 )
-
-
-from xartus.lib.bounds import Shape, Chunk
 from xartus.lib import (
     AbstractDataSource,
     Axis,
     AxisType,
     DataShape,
     MultiCOO,
-    Signal,
     MultiLinspace,
+    Signal,
 )
-from xartus.lib.dtypes import Int3D32, Int1D32, Float1D32
-from xartus.api import data_convert
+from xartus.lib.bounds import Chunk, Shape
+from xartus.lib.dtypes import Float1D32, Int1D32
 
 from bruker_reader.utils import MaldiAxis
 
@@ -37,10 +29,10 @@ logger = logging.getLogger(__name__)
 
 
 class TsfDataSource(AbstractDataSource):
-    def __init__(self, tsf_file: Path, sampling: MultiLinspace = MultiLinspace()):
+    def __init__(self, tsf_file: Path, sampling: MultiLinspace | None):
         if tsf_file.suffix != ".tsf":
             raise ValueError(
-                f"Expected the path to an analysis.tsf file, but recived '{tsf_file}'"
+                f"Expected the path to an analysis.tsf file, but received '{tsf_file}'"
             )
         self.dll = init_tdf_sdk_api()
         self.tof_data = TsfData(
@@ -56,6 +48,7 @@ class TsfDataSource(AbstractDataSource):
 
         self.max_data_count = self.max_peaks * self.frame_count
 
+        sampling = MultiLinspace() if sampling is None else sampling
         self.mz_edges = sampling.get_edges(min_mz, max_mz, mass_count)
 
         self.frame_info = self.tof_data.analysis.join_frame("MaldiFrameInfo")
@@ -121,7 +114,7 @@ class TsfDataSource(AbstractDataSource):
         total_data_capacity = np.prod(self.total_shape)
         density = self.max_data_count / total_data_capacity
         if density > 1.0:
-            logger.warn(
+            logger.warning(
                 f"The predicted density ({density:.2f} is greater than 1.0. This is likely because the number of mass bins is too small."
             )
 
@@ -133,7 +126,7 @@ class TsfDataSource(AbstractDataSource):
         return Signal("signal", np.int64, "counts")
 
     def output_chunks(self) -> dict[str, Shape]:
-        return dict(images=(1, 1, 2), spectra=(2, 2, 1))
+        return {"images": (1, 1, 2), "spectra": (2, 2, 1)}
 
     def chunk_read_count(self, memory_chunk: Shape) -> int:
         return memory_chunk[0] * memory_chunk[1]
@@ -178,7 +171,7 @@ class TsfDataSource(AbstractDataSource):
         return self.mz_edges
 
     def output_accumulations(self) -> dict[str, tuple[str, ...]]:
-        return dict(total_image=("mz",), total_spectra=("x", "y"))
+        return {"total_image": ("mz",), "total_spectra": ("x", "y")}
 
     def fill_chunk(
         self,

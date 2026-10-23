@@ -1,4 +1,5 @@
-from dataclasses import dataclass, field
+from dataclasses import dataclass
+
 import numpy as np
 
 Float1D32 = np.ndarray[tuple[int], np.dtype[np.float32]]

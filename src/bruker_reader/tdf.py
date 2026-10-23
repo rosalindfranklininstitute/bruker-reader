@@ -1,22 +1,18 @@
 import itertools
-from typing import Callable, Any
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 import numpy as np
-import numpy.typing as npt
-import sparse
 from icecream import ic
-
-
-from pyTDFSDK.init_tdf_sdk import init_tdf_sdk_api
 from pyTDFSDK.classes import TdfData
+from pyTDFSDK.init_tdf_sdk import init_tdf_sdk_api
 from pyTDFSDK.tims import (
-    tims_scannum_to_oneoverk0,
     tims_index_to_mz,
     tims_read_scans_v2,
+    tims_scannum_to_oneoverk0,
 )
-
-from xartus.lib.bounds import Shape, Chunk
+from xartus.lib.bounds import Chunk, Shape
 from xartus.lib.data_source import (
     AbstractDataSource,
     Axis,
@@ -25,16 +21,17 @@ from xartus.lib.data_source import (
     MultiCOO,
     Signal,
 )
-from xartus.lib.dtypes import Int3D32, Int4D32, Int1D32, Float1D32
+from xartus.lib.dtypes import Float1D32, Int1D32
 from xartus.lib.multi_linspace import MultiLinspace
 
 from bruker_reader.utils import MaldiAxis
 
+
 class TdfDataSource(AbstractDataSource):
-    def __init__(self, tdf_file: Path, sampling: MultiLinspace = MultiLinspace()):
+    def __init__(self, tdf_file: Path, sampling: MultiLinspace | None = None):
         if tdf_file.suffix != ".tdf":
             raise ValueError(
-                f"Expected the path to an analysis.tdf file, but recived '{tdf_file}'"
+                f"Expected the path to an analysis.tdf file, but received '{tdf_file}'"
             )
         self.dll = init_tdf_sdk_api()
         self.tof_data = TdfData(
@@ -60,6 +57,7 @@ class TdfDataSource(AbstractDataSource):
         ic(min_iim, max_iim)
         ic(mass_count)
 
+        sampling = MultiLinspace() if sampling is None else sampling
         self.mz_edges = sampling.get_edges(min_mz, max_mz, mass_count)
         ic(len(self.mz_edges))
         scan_positions = np.arange(0, self.max_scans)
@@ -146,9 +144,7 @@ class TdfDataSource(AbstractDataSource):
         return Signal("signal", np.int64, "counts")
 
     def output_chunks(self) -> dict[str, Shape]:
-        # return dict(images=(1, 1, 2, 3), spectra=(3, 3, 2, 1))
-        # return dict(spectra=(3, 3, 2, 1))
-        return dict(spectra=(1, 1, 1, 1))
+        return {"spectra": (1, 1, 1, 1)}
 
     def read_chunks(self) -> list[Shape] | None:
         return [(3, 3, 2, 1)]
@@ -205,11 +201,11 @@ class TdfDataSource(AbstractDataSource):
         return self.mz_edges
 
     def output_accumulations(self) -> dict[str, tuple[str, ...]]:
-        return dict(
-            total_image=("inv_ion_mobility", "mz"),
-            mz_spectra=("x", "y", "inv_ion_mobility"),
-            mobiligram=("x", "y", "mz"),
-        )
+        return {
+            "total_image": ("inv_ion_mobility", "mz"),
+            "mz_spectra": ("x", "y", "inv_ion_mobility"),
+            "mobiligram": ("x", "y", "mz"),
+        }
 
     def fill_chunk(
         self,
