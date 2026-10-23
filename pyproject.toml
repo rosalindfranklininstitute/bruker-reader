@@ -61,7 +61,7 @@ prof-mod = ['./src/bruker_reader/', 'bruker_reader', '../xartus/src/xartus/', 'x
 prof-imports = false
 
 [tool.bumpversion]
-current_version = "0.3.1"
+current_version = "0.1.0"
 parse = "(?P<major>\\d+)\\.(?P<minor>\\d+)\\.(?P<patch>\\d+)"
 serialize = ["{major}.{minor}.{patch}"]
 search = "{current_version}"
