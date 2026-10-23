@@ -1,4 +1,5 @@
-from ms_nexus_tools.lib.sparse_sampling import SparseSampling
+import logging
+from dataclasses import dataclass
 from pathlib import Path
 import os
 import sys
@@ -9,39 +10,38 @@ from tqdm import tqdm
 
 from icecream import ic
 
-from ms_nexus_tools.api import data_convert
+from argsui import arg_field, FilePathType, ArgType
 
-from . import maldi
-from . import query
+from xartus.api import data_convert
+from xartus.lib.multi_linspace import MultiLinspace
+
 from .loader import LoadOpenTims
 from .tsf import TsfDataSource
+from .tdf import TdfDataSource
+
+logging.basicConfig(format="%(module)s: %(levelname)s: %(message)s")
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+logging.getLogger(data_convert.__name__).setLevel(logging.INFO)
 
 
-def query_data() -> None:
-    partial_args = query.ProcessArgs.parse_config("query")
-    process_args = query.ProcessArgs.parse_interactive(
-        "query",
-        exclude=["config"],
-        args=partial_args.remaining_args,
+@dataclass
+class BrukerArgs(data_convert.ProcessArgs):
+    in_path: Path = arg_field(
+        "--input",
+        doc="The name of the folder to import data from.",
+        type=FilePathType(must_exist=True),
+        default=None,
     )
-    query.process(process_args, partial_args.config)
-
-
-def main() -> None:
-    partial_args = maldi.ProcessArgs.parse_config("maldi")
-    process_args = maldi.ProcessArgs.parse_interactive(
-        "maldi", args=partial_args.remaining_args, exclude=["config"]
-    )
-    maldi.process(process_args, partial_args.config)
 
 
 def tof() -> None:
-    partial_args = data_convert.ProcessArgs.parse_config("tof")
-    process_args = data_convert.ProcessArgs.parse_interactive(
-        "tof", args=partial_args.remaining_args, exclude=["config"]
+    partial_args = BrukerArgs.parse_config("bruker_convert_tof")
+    process_args = BrukerArgs.parse_interactive(
+        "bruker_convert_tof", args=partial_args.remaining_args, exclude=["config"]
     )
-    sampling = SparseSampling(
-        downsample_count=10,
+    sampling = MultiLinspace(
+        downsample_count=100,
         area_positions=np.array([50, 75, 100]),
         area_volumes=np.array([75, 20, 5]),
     )
@@ -50,45 +50,28 @@ def tof() -> None:
 
 
 def tims_tof() -> None:
-    partial_args = data_convert.ProcessArgs.parse_config("tims_tof")
-    process_args = data_convert.ProcessArgs.parse_interactive(
-        "tims_tof", args=partial_args.remaining_args, exclude=["config"]
+    partial_args = BrukerArgs.parse_config("bruker_convert_tims_tof")
+    process_args = BrukerArgs.parse_interactive(
+        "bruker_convert_tims_tof", args=partial_args.remaining_args, exclude=["config"]
     )
-    sampling = SparseAxisSampling(
+    sampling = MultiLinspace(
         downsample_count=10,
         area_positions=np.array([50, 75, 100]),
         area_volumes=np.array([75, 20, 5]),
     )
-    process_args.data_source = TsfDataSource(process_args.in_path, sampling=sampling)
+    process_args.data_source = TdfDataSource(process_args.in_path, sampling=sampling)
     data_convert.process(process_args, partial_args.config)
 
 
-def scratch() -> None:
-
-    path = Path(
-        "C:/Workspace/data/2024_06_19_MBrain_ABC_DP2/2024_06_19_MBrain_ABC_DP2.d/"
+def tims_samples() -> None:
+    partial_args = BrukerArgs.parse_config("bruker_convert_tims_tof")
+    process_args = BrukerArgs.parse_interactive(
+        "bruker_convert_tims_tof", args=partial_args.remaining_args, exclude=["config"]
     )
-    ic(path)
-    with LoadOpenTims(path) as D:
-        ic(D)
-        ic(D.all_columns)
-        ic(D.frames)
-        ic(D.frames["NumPeaks"])
-        ic(D.frames["NumScans"])
-        d = D.table2keyed_dict("MaldiFrameInfo")
-        ic(d[1])
-        d = D.table2dict("MaldiFrameInfo")
-        ic([k for k in d.keys()])
-
-    path = Path("C:/Workspace/data/251119_amylase_highres.d - Copy/")
-    ic(path)
-    with LoadOpenTims(path) as D:
-        ic(D)
-        ic(D.all_columns)
-        ic(D.frames)
-        ic(D.frames["NumPeaks"])
-        ic(D.frames["NumScans"])
-        d = D.table2keyed_dict("MaldiFrameInfo")
-        ic(d[1])
-        d = D.table2dict("MaldiFrameInfo")
-        ic([k for k in d.keys()])
+    sampling = MultiLinspace(
+        downsample_count=10,
+        area_positions=np.array([50, 75, 100]),
+        area_volumes=np.array([75, 20, 5]),
+    )
+    process_args.data_source = SpotDataSource(process_args.in_path, sampling=sampling)
+    # data_convert.process(process_args, partial_args.config)

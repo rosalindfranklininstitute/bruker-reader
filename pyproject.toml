@@ -6,16 +6,32 @@ readme = "README.md"
 authors = [
     { name = "McDougall", email = "Duncan.McDougall@rfi.ac.uk" }
 ]
-requires-python = ">=3.12, <3.14"
+requires-python = ">=3.13"
 dependencies = [
-    "datargs",
     "hdf5plugin>=6.0.0",
     "icecream>=2.2.0",
-    "ms-nexus-tools",
     "opentims-bruker-bridge>=1.2.0",
     "opentimspy>=1.1.0",
+    "pytdfsdk",
     "sparse>=0.18.0",
     "tqdm>=4.67.3",
+    "argsui[gui]>=0.3.6",
+    "xartus>=0.4.3",
+]
+
+
+[dependency-groups]
+dev = [
+    "line-profiler>=5.0.1",
+    "pre-commit>=4.7.0",
+    "pyinstaller>=6.22.3",
+    "snakeviz>=2.2.2",
+]
+tmp = [
+    "bokeh>=3.10.0",
+    "matplotlib>=3.10.8",
+    "polars>=1.44.1",
+    "pyarrow>=25.0.1",
 ]
 
 [project.scripts]
@@ -29,18 +45,12 @@ requires = ["uv_build>=0.10.11,<0.11.0"]
 build-backend = "uv_build"
 
 [tool.uv.sources]
-ms-nexus-tools = { path = "../ms-nexus-tools", editable = true }
-datargs = { path = "../datargs", editable = true }
+xartus = { path = "../Xartus", editable = true }
+pytdfsdk = { path = "../pyTDFSDK", editable = true }
 
 [tool.line_profiler.kernprof]
 line-by-line = true
 verbose = false
 skip-zero = true
-prof-mod = ['./src/bruker_reader/', 'bruker_reader', '../ms-nexus-tools/src/ms_nexus_tools/', 'ms_nexus_tools']
+prof-mod = ['./src/bruker_reader/', 'bruker_reader', '../xartus/src/xartus/', 'xartus', './tmp.py']
 prof-imports = false
-
-[dependency-groups]
-dev = [
-    "line-profiler>=5.0.1",
-    "snakeviz>=2.2.2",
-]

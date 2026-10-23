@@ -3,8 +3,8 @@ from pathlib import Path
 
 import numpy as np
 
-import ms_nexus_tools.lib.data_source as ds
-from ms_nexus_tools.lib.bounds import Shape, Chunk
+import xartus.lib.data_source as ds
+from xartus.lib.bounds import Shape, Chunk
 
 
 class MSIDataSource(ds.AbstractDataSource):
@@ -21,9 +21,9 @@ class MSIDataSource(ds.AbstractDataSource):
     def instrament_metadata(self) -> dict[str, Any]:
         assert self.D is not None
         return dict(
-            mz_spectra_type=ds.AxisDensity.CONTINUOUS
+            mz_spectra_type=ds.AxisType.EXACT
             if self.inflate_mz
-            else ds.AxisDensity.SPARSE,
+            else ds.AxisType.BINNED,
             min_mz=self.D.min_mz,
             max_mz=self.D.max_mz,
             min_inv_ion_mobility=self.D.min_inv_ion_mobility,
@@ -40,7 +40,7 @@ class MSIDataSource(ds.AbstractDataSource):
         """
         return dict()
 
-    def shape(self) -> Shape:
+    def shape(self) -> DataShape:
         """
         Return the shape of the data.
         """

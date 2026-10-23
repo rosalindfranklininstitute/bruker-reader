@@ -1,3 +1,4 @@
+import logging
 import itertools
 from typing import Callable, Any
 from pathlib import Path
@@ -16,22 +17,27 @@ from pyTDFSDK.tsf import (
     tsf_mz_to_index,
 )
 
-from ms_nexus_tools.lib.bounds import Shape, Chunk
-from ms_nexus_tools.lib.data_source import (
+
+from xartus.lib.bounds import Shape, Chunk
+from xartus.lib import (
     AbstractDataSource,
     Axis,
-    AxisDensity,
+    AxisType,
     DataShape,
     MultiCOO,
+    Signal,
+    MultiLinspace,
 )
-from ms_nexus_tools.lib.dtypes import Int3D32, Int1D32, Float1D32
-from ms_nexus_tools.lib.sparse_sampling import SparseSampling
+from xartus.lib.dtypes import Int3D32, Int1D32, Float1D32
+from xartus.api import data_convert
 
 from bruker_reader.utils import MaldiAxis
 
+logger = logging.getLogger(__name__)
+
 
 class TsfDataSource(AbstractDataSource):
-    def __init__(self, tsf_file: Path, sampling: SparseSampling = SparseSampling()):
+    def __init__(self, tsf_file: Path, sampling: MultiLinspace = MultiLinspace()):
         if tsf_file.suffix != ".tsf":
             raise ValueError(
                 f"Expected the path to an analysis.tsf file, but recived '{tsf_file}'"
@@ -61,10 +67,13 @@ class TsfDataSource(AbstractDataSource):
             len(self.mz_edges) - 1,
         )
 
+    def __enter__(self):
+        return self
+
     def __exit__(self, exc_type, exc_value, traceback):
         self.tof_data.close()
 
-    def instrament_metadata(self) -> dict[str, Any]:
+    def instrument_metadata(self) -> dict[str, Any]:
         names = [
             "SchemaType",
             "SchemaVersionMajor",
@@ -112,14 +121,16 @@ class TsfDataSource(AbstractDataSource):
         total_data_capacity = np.prod(self.total_shape)
         density = self.max_data_count / total_data_capacity
         if density > 1.0:
-            raise ValueError(
+            logger.warn(
                 f"The predicted density ({density:.2f} is greater than 1.0. This is likely because the number of mass bins is too small."
             )
 
-        return DataShape(shape=self.total_shape, density=density)
+        return DataShape(
+            shape=self.total_shape, is_sparse=True, worst_case_density=density
+        )
 
-    def signal_type(self) -> npt.DTypeLike:
-        return np.int64
+    def signal_definition(self) -> Signal:
+        return Signal("signal", np.int64, "counts")
 
     def output_chunks(self) -> dict[str, Shape]:
         return dict(images=(1, 1, 2), spectra=(2, 2, 1))
@@ -132,30 +143,27 @@ class TsfDataSource(AbstractDataSource):
             Axis(
                 name="x",
                 primary_axis=0,
-                secondary_axes=[],
-                density=AxisDensity.CONTINUOUS,
+                axis_type=AxisType.EXACT,
                 units="m",
-                dtype=np.float32,
+                dtype=np.int64,
             ),
             Axis(
                 name="y",
                 primary_axis=1,
-                secondary_axes=[],
-                density=AxisDensity.CONTINUOUS,
+                axis_type=AxisType.EXACT,
                 units="m",
-                dtype=np.float32,
+                dtype=np.int64,
             ),
             Axis(
                 name="mz",
                 primary_axis=2,
-                secondary_axes=[0, 1],
-                density=AxisDensity.SPARSE,
+                axis_type=AxisType.BINNED,
                 units="mz",
-                dtype=np.float32,
+                dtype=np.float64,
             ),
         ]
 
-    def continuous_axis_values(self, axis: Axis) -> np.ndarray:
+    def exact_axis_values(self, axis: Axis) -> np.ndarray:
         match axis.name:
             case "x":
                 return self.maldi_axis.x_values
@@ -164,9 +172,9 @@ class TsfDataSource(AbstractDataSource):
             case _:
                 raise ValueError(f"Unknown continuous axis requested: {axis.name}")
 
-    def sparse_axis_edges(self, axis: Axis) -> np.ndarray:
+    def binned_axis_edges(self, axis: Axis) -> np.ndarray:
         if axis.name != "mz":
-            raise ValueError(f"Unknown sparse axis requested: {axis.name}")
+            raise ValueError(f"Unknown binned axis requested: {axis.name}")
         return self.mz_edges
 
     def output_accumulations(self) -> dict[str, tuple[str, ...]]:
@@ -175,55 +183,46 @@ class TsfDataSource(AbstractDataSource):
     def fill_chunk(
         self,
         memory_chunk: Chunk,
-        fill_axis: list[Axis],
         update: Callable[[int], None],
-    ) -> np.ndarray | sparse.COO:
+    ) -> np.ndarray | MultiCOO:
 
-        assert len(fill_axis) == 1
-        assert fill_axis[0].name == "mz"
-
-        coords: list[Int3D32] = []
-        data: list[Int1D32] = []
-        mz_data: list[Float1D32] = []
+        coords: list[list[int]] = []
+        counts: list[int] = []
+        int_data: list[Int1D32] = []
+        inx_data: list[Float1D32] = []
+        last_frame_inx = 0
 
         for ii_x, ii_y in itertools.product(
             memory_chunk.range(0), memory_chunk.range(1)
         ):
             frame_inx = self.maldi_axis.frame_inx[ii_x, ii_y]
             if frame_inx >= 0:
+                last_frame_inx = frame_inx
                 index_array, intensity_array = tsf_read_line_spectrum_v2(
                     tdf_sdk=self.dll, handle=self.tof_data.handle, frame_id=frame_inx
                 )
-                mz_array = tsf_index_to_mz(
-                    tdf_sdk=self.dll,
-                    handle=self.tof_data.handle,
-                    frame_id=frame_inx,
-                    indices=index_array,
-                )
-
                 count = len(index_array)
-
-                frame_coord = np.array([ii_x, ii_y, 0]).reshape(3, 1)
-                frame_coords = np.tile(
-                    frame_coord,
-                    (1, count),
-                )
-                frame_coords[2, :] = np.arange(0, count)
-
-                coords.append(frame_coords)
-                data.append(intensity_array)
-                mz_data.append(mz_array)
+                counts.append(count)
+                coords.append([ii_x, ii_y, 0])
+                int_data.append(intensity_array)
+                inx_data.append(index_array)
 
             update(1)
 
-        axis = np.concatenate(mz_data)
-        labels = np.searchsorted(self.mz_edges[1:], axis)
+        inx_array = np.concatenate(inx_data)
+        mz_array = tsf_index_to_mz(
+            tdf_sdk=self.dll,
+            handle=self.tof_data.handle,
+            frame_id=last_frame_inx,
+            indices=inx_array,
+        )
+        labels = np.searchsorted(self.mz_edges[1:], mz_array)
         labels[labels == self.total_shape[-1]] = self.total_shape[-1] - 1
-        final_coords = np.concatenate(coords, axis=1)
+        final_coords = np.array(coords).T
+        final_coords = np.repeat(final_coords, counts, axis=1)
         final_coords[2, :] = labels
 
         return MultiCOO(
             coords=final_coords,
-            signal=np.concatenate(data),
-            axis=[axis],
+            values={"signal": np.concatenate(int_data), "mz": mz_array},
         )
