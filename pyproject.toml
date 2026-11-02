@@ -1,11 +1,11 @@
 # SPDX-FileCopyrightText: 2026 Duncan McDougall <duncan.mcdougall@rfi.ac.uk>
 #
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: LicenseRef-RFI-Apache-2.0-Commons-clause
 
 [project]
 name = "bruker-reader"
 version = "0.2.0"
-description = "Add your description here"
+description = "Converts Bruker .d/tsf and .d/tdf files to NeXus files with Xartus."
 readme = "README.md"
 authors = [
     { name = "McDougall", email = "Duncan.McDougall@rfi.ac.uk" }
@@ -20,6 +20,7 @@ dependencies = [
     "argsui[gui]>=0.3.6",
     "xartus>=0.4.3",
 ]
+license = "LicenseRef-RFI-Apache-2.0-Commons-clause AND LicenseRef-EULA-TDF-SDK"
 
 
 [dependency-groups]
