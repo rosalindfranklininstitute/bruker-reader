@@ -6,7 +6,7 @@ import itertools
 import logging
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, override
 
 import numpy as np
 from pyTDFSDK.classes import TsfData
@@ -18,14 +18,15 @@ from pyTDFSDK.tsf import (
 from xartus.lib import (
     AbstractDataSource,
     Axis,
-    AxisType,
     DataShape,
     MultiCOO,
-    MultiLinspace,
     Signal,
+    MultiLinspace,
+    Chunk,
+    Shape,
 )
-from xartus.lib.bounds import Chunk, Shape
 from xartus.lib.dtypes import Float1D32, Int1D32
+from xartus.lib.writers import AbstractWriter, SumAndMax
 
 from bruker_reader.utils import MaldiAxis
 
@@ -61,15 +62,18 @@ class TsfDataSource(AbstractDataSource):
         self.total_shape = (
             len(self.maldi_axis.x_values),
             len(self.maldi_axis.y_values),
-            len(self.mz_edges) - 1,
+            len(self.mz_edges),
         )
 
+    @override
     def __enter__(self):
         return self
 
+    @override
     def __exit__(self, exc_type, exc_value, traceback):
         self.tof_data.close()
 
+    @override
     def instrument_metadata(self) -> dict[str, Any]:
         names = [
             "SchemaType",
@@ -111,9 +115,15 @@ class TsfDataSource(AbstractDataSource):
 
         return {name: self.tof_data.GlobalMetadata[name] for name in names}
 
+    @override
+    def user_metadata(self) -> dict[str, Any]:
+        return {}
+
+    @override
     def experiment_metadata(self) -> dict[str, Any]:
         return {}
 
+    @override
     def shape(self) -> DataShape:
         total_data_capacity = np.prod(self.total_shape)
         density = self.max_data_count / total_data_capacity
@@ -122,61 +132,63 @@ class TsfDataSource(AbstractDataSource):
                 f"The predicted density ({density:.2f} is greater than 1.0. This is likely because the number of mass bins is too small."
             )
 
-        return DataShape(
-            shape=self.total_shape, is_sparse=True, worst_case_density=density
-        )
+        return DataShape(shape=self.total_shape, worst_case_density=density)
 
+    @override
     def signal_definition(self) -> Signal:
         return Signal("signal", np.int64, "counts")
 
-    def output_chunks(self) -> dict[str, Shape]:
+    @override
+    def output_chunk_priorities(self) -> dict[str, Shape]:
         return {"images": (1, 1, 2), "spectra": (2, 2, 1)}
 
+    @override
     def chunk_read_count(self, memory_chunk: Shape) -> int:
         return memory_chunk[0] * memory_chunk[1]
 
+    @override
     def axis_definitions(self) -> list[Axis]:
         return [
             Axis(
                 name="x",
                 primary_axis=0,
-                axis_type=AxisType.EXACT,
                 units="m",
                 dtype=np.int64,
             ),
             Axis(
                 name="y",
                 primary_axis=1,
-                axis_type=AxisType.EXACT,
                 units="m",
                 dtype=np.int64,
             ),
             Axis(
                 name="mz",
                 primary_axis=2,
-                axis_type=AxisType.BINNED,
                 units="mz",
                 dtype=np.float64,
             ),
         ]
 
-    def exact_axis_values(self, axis: Axis) -> np.ndarray:
+    @override
+    def axis_values(self, axis: Axis) -> np.ndarray:
         match axis.name:
             case "x":
                 return self.maldi_axis.x_values
             case "y":
                 return self.maldi_axis.y_values
+            case "mz":
+                return self.mz_edges
             case _:
                 raise ValueError(f"Unknown continuous axis requested: {axis.name}")
 
-    def binned_axis_edges(self, axis: Axis) -> np.ndarray:
-        if axis.name != "mz":
-            raise ValueError(f"Unknown binned axis requested: {axis.name}")
-        return self.mz_edges
+    @override
+    def output_accumulations(self) -> list[AbstractWriter]:
+        return [
+            SumAndMax("total_image", axes=["mz"]),
+            SumAndMax("total_spectra", axes=["x", "y"]),
+        ]
 
-    def output_accumulations(self) -> dict[str, tuple[str, ...]]:
-        return {"total_image": ("mz",), "total_spectra": ("x", "y")}
-
+    @override
     def fill_chunk(
         self,
         memory_chunk: Chunk,

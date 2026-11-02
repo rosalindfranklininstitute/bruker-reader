@@ -63,7 +63,7 @@ wheels = [
 
 [[package]]
 name = "bruker-reader"
-version = "0.1.0"
+version = "0.2.0"
 source = { editable = "." }
 dependencies = [
     { name = "argsui", extra = ["gui"] },
@@ -1298,7 +1298,7 @@ wheels = [
 
 [[package]]
 name = "xartus"
-version = "0.4.3"
+version = "0.5.1"
 source = { editable = "../Xartus" }
 dependencies = [
     { name = "argsui" },
